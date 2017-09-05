@@ -175,10 +175,10 @@ def call_sample(state, shard_id):
     )
 
 
-def call_tx_add_header(state, sender_privkey, value, header):
+def call_tx_add_header(state, sender_privkey, value, header, gasprice=GASPRICE):
     return call_tx(
         state, get_valmgr_ct(), 'add_header', [header],
-        sender_privkey, get_valmgr_addr(), value
+        sender_privkey, get_valmgr_addr(), value, gasprice=gasprice
     )
 
 
