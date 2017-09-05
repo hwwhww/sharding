@@ -27,6 +27,12 @@ if os.environ.get("USE_PYETHEREUM_DEVELOP"):
     DEPENDENCY_LINKS = [
         'http://github.com/ethereum/pyethereum/tarball/%s#egg=ethereum-9.99.9' % pyethereum_ref
     ]
+elif os.environ.get("USE_PYETHEREUM_SIM"):
+    # Force installation of specific commits of pyethereum.
+    pyethereum_ref = '9875abfc579863018406f2ff5c476f4fc617f92a'
+    DEPENDENCY_LINKS = [
+        'http://github.com/hwwhww/pyethereum/tarball/sim/%s#egg=ethereum-9.99.9' % pyethereum_ref
+    ]
 
 # Force installation of specific commits of viper.
 # viper_ref = 'fd7529e7faa6d3aebd8e0e893a42e43c562a56f5'  # Jul 30, 2017
@@ -42,7 +48,7 @@ setup(
     version=version,
     description='Ethereum Sharding PoC utilities',
     url='https://github.com/ethereum/sharding',
-    packages=find_packages("."),
+    packages=find_packages(exclude=('simulation', 'docs')),
     package_data={},
     zip_safe=False,
     classifiers=[
