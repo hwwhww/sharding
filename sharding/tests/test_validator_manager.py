@@ -118,7 +118,7 @@ def test_validator_manager():
     assert x.get_shard_head() == shard0_genesis_colhdr_hash
     # test add_header: works normally with parent_collation_hash == GENESIS
     h1 = get_colhdr(shard_id, shard0_genesis_colhdr_hash)
-    h1_hash = utils.sha3(h1)
+    # h1_hash = utils.sha3(h1)
     assert x.add_header(h1)
     # test add_header: fails when the header is added before
     with pytest.raises(t.TransactionFailed):
@@ -129,7 +129,6 @@ def test_validator_manager():
         h2 = get_colhdr(shard_id, utils.sha3("123"))
         x.add_header(h2)
     # test add_header: the log is generated normally
-
 
     # TODO: The following tests need to mine before calling add_header,
     # this section may not be appropriate to test the second add_header
