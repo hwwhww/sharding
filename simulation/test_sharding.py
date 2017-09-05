@@ -1,4 +1,7 @@
 import time
+import sys
+import numpy as np
+import copy
 
 from ethereum.config import Env
 from ethereum import utils
@@ -9,17 +12,18 @@ from ethereum import utils
 #     casper_config, get_casper_ct, get_casper_code, get_rlp_decoder_code, \
 #     get_hash_without_ed_code, make_casper_genesis
 
-from ethereum.utils import sha3, privtoaddr, to_string
+from ethereum.utils import sha3, privtoaddr, to_string, encode_hex
 from ethereum.slogging import configure_logging
+from ethereum.genesis_helpers import mk_genesis_data
 
-from sharding_utils import make_sharding_genesis
+from sharding_utils import make_sharding_genesis, mk_basic_state
 from sharding.config import sharding_config
 
 from validator import Validator
 import validator
 import networksim
-from sharding_sim_config import Config as p
-
+from sim_config import Config as p
+from progress import progress
 
 # config_string = ':info,eth.vm.log:trace,eth.vm.op:trace,eth.vm.stack:trace,eth.vm.exit:trace,eth.pb.msg:trace,eth.pb.tx:debug'
 config_string = ':info,eth.vm.log:trace'
@@ -29,7 +33,7 @@ configure_logging(config_string=config_string)
 # if __name__ == "__main__":
 def test_simulation():
     # Initialize NetworkSimulator
-    n = networksim.NetworkSimulator(latency=p.LATENCY)
+    n = networksim.NetworkSimulator(latency=p.LATENCY, reliability=p.RELIABILITY)
     n.time = p.INITIAL_TIMESTAMP
 
     # 1. Create genesis state of main chain
@@ -48,7 +52,7 @@ def test_simulation():
         keys,
         alloc={privtoaddr(k): {'balance': 10000 * utils.denoms.ether} for k in keys},
         timestamp=2)
-    g = s.ephemeral_clone().to_snapshot()
+    g = s.to_snapshot()
     print('Genesis state created')
     validators = [Validator(g, k, n, env=Env(config=sharding_config), time_offset=p.TIME_OFFSET, validation_code_addr=validation_code_addr_list[k]) for k in keys]
 
@@ -62,21 +66,22 @@ def test_simulation():
 
     # 3. Add default shard
     for index, v in enumerate(validators):
-        if index % 2 == 0:
-            shard_id = 1
-        else:
-            shard_id = 2
+        shard_id = 1
         v.new_shard(shard_id)
-        print('validator {} is watching shard {}'.format(index, shard_id))
+        print('Validator {} is watching shard {}'.format(index, shard_id))
 
     # 4. tick
     start_time = time.time()
-    for i in range(2000):
-        # print 'ticking'
+    print('start headblock.number = {}, state.number = {}'.format(validators[0].chain.head.number, validators[0].chain.state.block_number))
+
+    for i in range(p.TOTAL_TICKS):
+        # Print progress bar in stderr
+        progress(i, p.TOTAL_TICKS, status='Simulating.....')
+
         n.tick()
         if i % 100 == 0:
             print('%d ticks passed' % i)
-            print('Validator heads:', [v.chain.head.header.number if v.chain.head else None for v in validators])
+            print('Validator block heads:', [v.chain.head.header.number if v.chain.head else None for v in validators])
             print('Total blocks created:', validator.global_block_counter)
 
             # # [Casper]
@@ -96,6 +101,34 @@ def test_simulation():
         #     print('Withdrawing a few validators')
         #     for v in validators[:5]:
         #         v.withdraw()
+    print('Total ticks: {}'.format(p.TOTAL_TICKS))
+    print('Simulation precision: {}'.format(p.PRECISION))
+    print('------')
+    print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
+    print('Network reliability: {}'.format(p.RELIABILITY))
+    print('------')
+    print('Validator clock offset: {}'.format(p.TIME_OFFSET))
+    print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
+    print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
+    print('------')
+    print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
+    print('Number of peers: {}'.format(p.NUM_PEERS))
+    print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
+    print('------')
+    block_num_list = [v.chain.head.header.number if v.chain.head else None for v in validators]
+    print('Validator block heads:', block_num_list)
+    print('Total blocks created:', validator.global_block_counter)
+    avg_block_length = np.mean(block_num_list)
+    print('Average Block Length: {}'.format(avg_block_length))
+    print('Average Block Time: {} sec'.format((n.time * p.PRECISION)  / avg_block_length))
+
+    min_block_num = np.min(block_num_list)
+    print('Min Block Number: {}'.format(min_block_num))
+    print('Min Block Hash', [encode_hex(v.chain.get_block_by_number(min_block_num).header.hash[:4]) if v.chain.head else None for v in validators])
+
+    print('------')
+    print('Validator collation heads:', [v.chain.shards[v.shard_id].get_score(v.chain.shards[v.shard_id].head) if v.chain.shards[v.shard_id].head else None for v in validators])
+    print('Total collations created:', validator.global_collation_counter)
     print("--- %s seconds ---" % (time.time() - start_time))
     print('[END]')
 

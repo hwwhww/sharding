@@ -10,12 +10,13 @@ def normal_distribution(mean, standev):
 
 def exponential_distribution(mean):
     def f():
-        total = 0
-        while 1:
-            total += 1
-            if not random.randrange(32):
-                break
-        return int(total * 0.03125 * mean)
+        return int(random.expovariate(1.0 / mean))
+        # total = 0
+        # while 1:
+        #     total += 1
+        #     if not random.randrange(32):
+        #         break
+        # return int(total * 0.03125 * mean)
 
     return f
 

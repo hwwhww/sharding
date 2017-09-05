@@ -4,13 +4,14 @@ import random
 
 class NetworkSimulator():
 
-    def __init__(self, latency=50):
+    def __init__(self, latency=50, reliability=0.9):
         self.agents = []
         self.latency_distribution_sample = transform(normal_distribution(latency, (latency * 2) // 5), lambda x: max(x, 0))
+        # 1 unit = 0.01 sec
         self.time = 0
         self.objqueue = {}
         self.peers = {}
-        self.reliability = 0.9
+        self.reliability = reliability
 
     def generate_peers(self, num_peers=5):
         self.peers = {}
@@ -39,9 +40,11 @@ class NetworkSimulator():
         for i in range(steps):
             self.tick()
 
-    def broadcast(self, sender, obj):
+    def broadcast(self, sender, obj, additional_latency=0):
+        # recv_time = self.time + self.latency_distribution_sample() + additional_latency
+        # print('[V {}] broadcasts object, now is {}, recv_time about {} '.format(sender, self.time, recv_time)) 
         for p in self.peers[sender.id]:
-            recv_time = self.time + self.latency_distribution_sample()
+            recv_time = self.time + self.latency_distribution_sample() + additional_latency
             if recv_time not in self.objqueue:
                 self.objqueue[recv_time] = []
             self.objqueue[recv_time].append((p, obj))
