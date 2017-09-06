@@ -141,10 +141,11 @@ def call_msg(state, ct, func, args, sender_addr, to, value=0, startgas=STARTGAS)
     return result
 
 
-def call_tx(state, ct, func, args, sender, to, value=0, startgas=STARTGAS, gasprice=GASPRICE):
+def call_tx(state, ct, func, args, sender, to, value=0, startgas=STARTGAS, gasprice=GASPRICE, nonce=None):
     # Transaction(nonce, gasprice, startgas, to, value, data, v=0, r=0, s=0)
     tx = Transaction(
-        state.get_nonce(utils.privtoaddr(sender)), gasprice, startgas, to, value,
+        state.get_nonce(utils.privtoaddr(sender)) if nonce is None else nonce,
+        gasprice, startgas, to, value,
         ct.encode_function_call(func, args)
     ).sign(sender)
     return tx
@@ -175,10 +176,20 @@ def call_sample(state, shard_id):
     )
 
 
-def call_tx_add_header(state, sender_privkey, value, header, gasprice=GASPRICE):
+def get_shard_list(state, valcode_addr):
+    ct = get_valmgr_ct()
+    dummy_addr = b'\xff' * 20
+    shard_list = call_msg(
+        state, ct, 'get_shard_list', [valcode_addr],
+        dummy_addr, get_valmgr_addr(), 0, startgas=10 ** 20
+    )
+    return abi.decode_abi(['bool[' + str(sharding_config['SHARD_COUNT']) + ']'], shard_list)[0]
+
+
+def call_tx_add_header(state, sender_privkey, value, header, gasprice=GASPRICE, nonce=None):
     return call_tx(
         state, get_valmgr_ct(), 'add_header', [header],
-        sender_privkey, get_valmgr_addr(), value, gasprice=gasprice
+        sender_privkey, get_valmgr_addr(), value, gasprice=gasprice, nonce=nonce
     )
 
 
