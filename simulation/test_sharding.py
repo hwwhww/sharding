@@ -1,7 +1,5 @@
 import time
-import sys
 import numpy as np
-import copy
 
 from ethereum.config import Env
 from ethereum import utils
@@ -14,9 +12,8 @@ from ethereum import utils
 
 from ethereum.utils import sha3, privtoaddr, to_string, encode_hex
 from ethereum.slogging import configure_logging
-from ethereum.genesis_helpers import mk_genesis_data
 
-from sharding_utils import make_sharding_genesis, mk_basic_state
+from sharding_utils import make_sharding_genesis
 from sharding.config import sharding_config
 
 from validator import Validator
@@ -65,10 +62,10 @@ def test_simulation():
     # made_101_check = 0
 
     # 3. Add default shard
-    for index, v in enumerate(validators):
-        shard_id = 1
-        v.new_shard(shard_id)
-        print('Validator {} is watching shard {}'.format(index, shard_id))
+    # for index, v in enumerate(validators):
+    #     shard_id = 1
+    #     v.new_shard(shard_id)
+    #     print('Validator {} is watching shard {}'.format(index, shard_id))
 
     # 4. tick
     start_time = time.time()
@@ -120,14 +117,18 @@ def test_simulation():
     print('Total blocks created:', validator.global_block_counter)
     avg_block_length = np.mean(block_num_list)
     print('Average Block Length: {}'.format(avg_block_length))
-    print('Average Block Time: {} sec'.format((n.time * p.PRECISION)  / avg_block_length))
+    print('Average Block Time: {} sec'.format((n.time * p.PRECISION) / avg_block_length))
 
     min_block_num = np.min(block_num_list)
     print('Min Block Number: {}'.format(min_block_num))
     print('Min Block Hash', [encode_hex(v.chain.get_block_by_number(min_block_num).header.hash[:4]) if v.chain.head else None for v in validators])
 
     print('------')
-    print('Validator collation heads:', [v.chain.shards[v.shard_id].get_score(v.chain.shards[v.shard_id].head) if v.chain.shards[v.shard_id].head else None for v in validators])
+    for shard_id in range(p.SHARD_COUNT):
+        print('[shard {}] Validator collation heads: {}'.format(
+            shard_id,
+            [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head) if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None for v in validators]
+        ))
     print('Total collations created:', validator.global_collation_counter)
     print("--- %s seconds ---" % (time.time() - start_time))
     print('[END]')

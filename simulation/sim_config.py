@@ -1,5 +1,5 @@
 class Config(object):
-    TOTAL_TICKS = 24000    
+    TOTAL_TICKS = 24000
     PRECISION = 0.05
     SERENITY_FORK_BLKNUM = 100
 

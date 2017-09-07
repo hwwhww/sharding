@@ -42,7 +42,7 @@ class NetworkSimulator():
 
     def broadcast(self, sender, obj, additional_latency=0):
         # recv_time = self.time + self.latency_distribution_sample() + additional_latency
-        # print('[V {}] broadcasts object, now is {}, recv_time about {} '.format(sender, self.time, recv_time)) 
+        # print('[V {}] broadcasts object, now is {}, recv_time about {} '.format(sender, self.time, recv_time))
         for p in self.peers[sender.id]:
             recv_time = self.time + self.latency_distribution_sample() + additional_latency
             if recv_time not in self.objqueue:

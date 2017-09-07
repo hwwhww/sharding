@@ -45,7 +45,7 @@ def make_sharding_genesis(keys, alloc, timestamp=0):
 
     # Deploy contracts
     cs = get_consensus_strategy(sharding_config)
-    # cs.initialize(state)
+    cs.initialize(state)
     # casper_contract_bootstrap(state, timestamp=header.timestamp, gas_limit=header.gas_limit)
     sharding_contract_bootstrap(state, keys[0])
 
