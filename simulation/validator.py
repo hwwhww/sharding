@@ -3,13 +3,6 @@ from collections import defaultdict
 import copy
 import rlp
 
-
-# [Casper]
-# from ethereum.full_casper.casper_utils import RandaoManager, get_skips_and_block_making_time, \
-#     generate_validation_code, call_casper, sign_block, check_skips, get_timestamp, \
-#     get_casper_ct, get_dunkle_candidates, \
-#     make_withdrawal_signature
-
 from ethereum import utils
 from ethereum.utils import (
     sha3, hash32, int256, privtoaddr,
@@ -118,9 +111,6 @@ class Validator(object):
         # My address
         self.address = privtoaddr(key)
 
-        # [Casper] My randao
-        # self.rsandao = RandaoManager(sha3(self.key))
-
         # Pointer to the test p2p network
         self.network = network
         # Record of objects already received and processed
@@ -130,17 +120,10 @@ class Validator(object):
         self.mining_distribution = transform(exponential_distribution(p.MEAN_MINING_TIME), lambda x: max(x, 0))
         self.next_mining_timestamp = int(self.network.time * p.PRECISION) + self.mining_distribution()
 
-        # [Casper] The minimum eligible timestamp given a particular number of skips
-        self.next_skip_count = 0
-        self.next_skip_timestamp = 0
-        # [Casper] Is this validator active?
-        self.active = True
-
         # Code that verifies signatures from this validator
         self.validation_code = mk_validation_code(privtoaddr(key))
         self.validation_code_addr = validation_code_addr
-        # [Casper] Validation code hash
-        self.vchash = sha3(self.validation_code)
+
         # Parents that this validator has already built a block on
         self.used_parents = {}
         # This validator's clock offset (for testing purposes)
@@ -148,10 +131,8 @@ class Validator(object):
 
         # Determine the epoch length
         # TODO? -> shuffling_cycle, peroid_length
-        self.epoch_length = 0
         self.shuffling_cycle = 0
         self.peroid_length = 0
-        # self.epoch_length = self.call_casper('getEpochLength')
 
         # Current shuffling cycle number
         self.shuffling_cycle = -1
@@ -176,19 +157,6 @@ class Validator(object):
         """
         pass
         # print('get_num_validators: {}'.format(self.call_msg('get_num_validators')))
-
-    # [Casper]
-    # def update_activity_status(self):
-    #     start_epoch = self.call_casper('getStartEpoch', [self.vchash])
-    #     now_epoch = self.call_casper('getEpoch')
-    #     end_epoch = self.call_casper('getEndEpoch', [self.vchash])
-    #     if start_epoch <= now_epoch < end_epoch:
-    #         self.active = True
-    #         self.next_skip_count = 0
-    #         self.next_skip_timestamp = get_timestamp(self.chain, self.next_skip_count)
-    #         print('In current validator set')
-    #     else:
-    #         self.active = False
 
     def get_timestamp(self):
         return int(self.network.time * p.PRECISION) + self.time_offset
@@ -283,7 +251,6 @@ class Validator(object):
 
         # Is it early enough to create the block?
         if t >= self.next_mining_timestamp and \
-            t >= self.next_skip_timestamp and \
                 (not self.chain.head or t > self.chain.head.header.timestamp):
             mining_time = self.mining_distribution()
             self.next_mining_timestamp = t + mining_time
@@ -291,16 +258,6 @@ class Validator(object):
             print(
                 'Incrementing proposed timestamp + %d for block %d to %d' %
                 (mining_time, self.chain.head.header.number + 1 if self.chain.head else 0, self.next_mining_timestamp))
-
-            # [Capser]
-            # Wrong validator; in this case, just wait for the next skip count
-            # self.next_skip_timestamp = get_timestamp(self.chain, self.next_skip_count)
-            # if not check_skips(self.chain, self.vchash, self.next_skip_count):
-            #     self.next_skip_count += 1
-            #     self.next_skip_timestamp = get_timestamp(self.chain, self.next_skip_count)
-            #     print('Incrementing proposed timestamp for block %d to %d' % \
-            #         (self.chain.head.header.number + 1 if self.chain.head else 0, self.next_skip_timestamp))
-            #     return
 
             self.used_parents[self.chain.head_hash] = True
             # Simulated 0.01% chance of validator failure to make a block
@@ -310,20 +267,13 @@ class Validator(object):
                 return
 
             # Make the block
-            s1 = self.chain.state.trie.root_hash
-
             # Make a copy of self.transaction_queue because make_head_candidate modifies it.
             txqueue = copy.deepcopy(self.txqueue)
             blk, _ = make_head_candidate(self.chain, txqueue, coinbase=privtoaddr(self.key))
             self.txqueue = self.txqueue.diff(blk.transactions)
 
-            # [Casper] TODO?
-            # randao = self.c.get_parent(self.call_casper('getRandao', [self.vchash]))
-            # blk = sign_block(blk, self.key, randao, self.vchash, self.next_skip_count)
-
             # option 1: call mine()
             # blk = Miner(blk).mine(rounds=100, start_nonce=0)
-
             # option 2: fake mining
             blk.header.mixhash = b'\x00'
             blk.header.nonce = b'\x00'
@@ -333,10 +283,6 @@ class Validator(object):
 
             self.print_id()
             print('Made block with timestamp %d, tx count: %d' % (blk.timestamp, blk.transaction_count))
-
-            s2 = self.chain.state.trie.root_hash
-            assert s1 == s2
-            assert blk.timestamp >= self.next_skip_timestamp
 
             # Set filter add_header logs
             if len(self.chain.state.log_listeners) == 0:
