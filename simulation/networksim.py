@@ -13,18 +13,26 @@ class NetworkSimulator():
         self.peers = {}
         self.reliability = reliability
 
-    def generate_peers(self, num_peers=5):
-        self.peers = {}
+    def clear_peers(self, network_id=1):
+        self.peers[network_id] = {}
+
+    def add_peers(self, agent, num_peers=5, network_id=1, peer_list=None):
+        if peer_list is None:
+            peer_list = self.agents
+        p = []
+        assert len(peer_list) > 1
+        while len(p) <= num_peers // 2:
+            p.append(random.choice(peer_list))
+            if p[-1] == agent:
+                p.pop()
+        self.peers[network_id][agent.id] = self.peers[network_id].get(agent.id, []) + p
+        for peer in p:
+            self.peers[network_id][peer.id] = self.peers[network_id].get(peer.id, []) + [agent]
+
+    def generate_peers(self, num_peers=5, network_id=1):
+        self.clear_peers(network_id)
         for a in self.agents:
-            p = []
-            assert len(self.agents) > 1
-            while len(p) <= num_peers // 2:
-                p.append(random.choice(self.agents))
-                if p[-1] == a:
-                    p.pop()
-            self.peers[a.id] = self.peers.get(a.id, []) + p
-            for peer in p:
-                self.peers[peer.id] = self.peers.get(peer.id, []) + [a]
+            self.add_peers(a, num_peers=num_peers, network_id=network_id)
 
     def tick(self):
         if self.time in self.objqueue:
@@ -40,10 +48,10 @@ class NetworkSimulator():
         for i in range(steps):
             self.tick()
 
-    def broadcast(self, sender, obj, additional_latency=0):
+    def broadcast(self, sender, obj, additional_latency=0, network_id=1):
         # recv_time = self.time + self.latency_distribution_sample() + additional_latency
         # print('[V {}] broadcasts object, now is {}, recv_time about {} '.format(sender, self.time, recv_time))
-        for p in self.peers[sender.id]:
+        for p in self.peers[network_id][sender.id]:
             recv_time = self.time + self.latency_distribution_sample() + additional_latency
             if recv_time not in self.objqueue:
                 self.objqueue[recv_time] = []
@@ -57,23 +65,23 @@ class NetworkSimulator():
                     self.objqueue[recv_time] = []
                 self.objqueue[recv_time].append((a, obj))
 
-    def knock_offline_random(self, n):
+    def knock_offline_random(self, n, network_id=1):
         ko = {}
         while len(ko) < n:
             c = random.choice(self.agents)
             ko[c.id] = c
         for c in ko.values():
-            self.peers[c.id] = []
+            self.peers[network_id][c.id] = []
         for a in self.agents:
-            self.peers[a.id] = [x for x in self.peers[a.id] if x.id not in ko]
+            self.peers[network_id][a.id] = [x for x in self.peers[network_id][a.id] if x.id not in ko]
 
-    def partition(self):
+    def partition(self, network_id=1):
         a = {}
         while len(a) < len(self.agents) / 2:
             c = random.choice(self.agents)
             a[c.id] = c
         for c in self.agents:
             if c.id in a:
-                self.peers[c.id] = [x for x in self.peers[c.id] if x.id in a]
+                self.peers[network_id][c.id] = [x for x in self.peers[network_id][c.id] if x.id in a]
             else:
-                self.peers[c.id] = [x for x in self.peers[c.id] if x.id not in a]
+                self.peers[network_id][c.id] = [x for x in self.peers[network_id][c.id] if x.id not in a]

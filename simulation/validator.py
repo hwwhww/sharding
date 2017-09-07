@@ -6,7 +6,7 @@ import rlp
 from ethereum import utils
 from ethereum.utils import (
     sha3, hash32, int256, privtoaddr,
-    big_endian_to_int, encode_hex)
+    big_endian_to_int, encode_hex, to_string, int_to_addr)
 from ethereum.transaction_queue import TransactionQueue
 from ethereum.meta import make_head_candidate
 from ethereum.block import Block
@@ -15,6 +15,7 @@ from ethereum.pow.ethpow import Miner
 from ethereum.messages import apply_transaction
 from ethereum.common import mk_block_from_prevstate
 from ethereum.consensus_strategy import get_consensus_strategy
+from ethereum.genesis_helpers import mk_basic_state
 
 from sharding.collation import Collation
 from sharding.validator_manager_utils import (
@@ -28,18 +29,39 @@ from sharding.validator_manager_utils import (
 from sharding.main_chain import MainChain as Chain
 from sharding.collator import create_collation, verify_collation_header
 from sharding.collation import CollationHeader
+from sharding.shard_chain import ShardChain
 
 # from sharding_utils import RandaoManager
 from sim_config import Config as p
 from distributions import transform, exponential_distribution
+from sharding_utils import prepare_next_state
 
+STARTGAS = 3141592
+GASPRICE = 1
 
 global_block_counter = 0
 global_collation_counter = 0
 add_header_topic = utils.big_endian_to_int(ADD_HEADER_TOPIC)
 
 global_tx_to_collation = {}
+global_peer_list = defaultdict(lambda : defaultdict(set))
 
+# Initialize accounts
+accounts = []
+keys = []
+
+for account_number in range(p.VALIDATOR_COUNT):
+    keys.append(sha3(to_string(account_number)))
+    accounts.append(privtoaddr(keys[-1]))
+
+base_alloc = {}
+minimal_alloc = {}
+for a in accounts:
+    base_alloc[a] = {'balance': 1000 * utils.denoms.ether}
+for i in range(1, 9):
+    base_alloc[int_to_addr(i)] = {'balance': 1}
+    minimal_alloc[int_to_addr(i)] = {'balance': 1}
+minimal_alloc[accounts[0]] = {'balance': 1 * utils.denoms.ether}
 
 class GetBlockRequest(rlp.Serializable):
     fields = [
@@ -92,7 +114,7 @@ class ShardData(object):
         # id of this shard
         self.shard_id = shard_id
         # Parents that this validator has already built a block on
-        self.used_parents = defaultdict(dict)
+        self.used_parents = {}
         self.txqueue = TransactionQueue()
         self.cached_head = head_hash
         self.period_head = 0
@@ -129,11 +151,6 @@ class Validator(object):
         # This validator's clock offset (for testing purposes)
         self.time_offset = random.randrange(time_offset) - (time_offset // 2)
 
-        # Determine the epoch length
-        # TODO? -> shuffling_cycle, peroid_length
-        self.shuffling_cycle = 0
-        self.peroid_length = 0
-
         # Current shuffling cycle number
         self.shuffling_cycle = -1
 
@@ -142,7 +159,6 @@ class Validator(object):
         # Give this validator a unique ID
         self.id = len(ids)
         ids.append(self.id)
-        self.update_activity_status()
         self.cached_head = self.chain.head_hash
         self.head_nonce = self.chain.state.get_nonce(self.address)
         self.tick_chain_state = self.chain.state
@@ -151,12 +167,7 @@ class Validator(object):
         self.shard_data = {}
         self.shard_id_list = set()
         self.chain.add_header_logs = []
-
-    def update_activity_status(self):
-        """ Check if they are current collator
-        """
-        pass
-        # print('get_num_validators: {}'.format(self.call_msg('get_num_validators')))
+        self.is_busy = False
 
     def get_timestamp(self):
         return int(self.network.time * p.PRECISION) + self.time_offset
@@ -232,17 +243,52 @@ class Validator(object):
         for x in self.chain.get_chain():
             assert x.hash in self.received_objects
 
-    def tick_main(self):
+    def tick_cycle(self):
+        global global_peer_list
+        # Check shuffling cycle
+        if self.chain.head.number % p.SHUFFLING_CYCLE_LENGTH == 0 and \
+            self.shuffling_cycle < self.chain.head.number / p.SHUFFLING_CYCLE_LENGTH:
+            # Update self.shuffling_cycle
+            self.shuffling_cycle = self.chain.head.number / p.SHUFFLING_CYCLE_LENGTH
+            # Shuffle!
+            shard_id_list = self.get_shard_id_list()
+            self.shuffle_shard(shard_id_list)
+
+            # Update peer_list
+            for shard_id in shard_id_list:
+                global_peer_list[shard_id][self.shuffling_cycle].add(self)
+                self.chain.shards[shard_id].is_syncing = True
+
+                # A dirty method to simulate that peers are happily connected
+                # If the given validator is the only node in this shard, don't need to discover other node
+                if len(global_peer_list[shard_id][self.shuffling_cycle]) == 1:
+                    self.network.clear_peers(network_id=10000+shard_id)
+                # Try to connect to other nodes
+                elif self.chain.shards[shard_id].is_syncing:
+                    self.print_id()
+                    print('Syncing...')
+                    self.network.add_peers(
+                        self, num_peers=p.SHARD_NUM_PEERS, network_id=10000+shard_id,
+                        peer_list=list(global_peer_list[shard_id][self.shuffling_cycle]))
+
+                    # FIXME: Now just assume the sync is really fast
+                    self.chain.shards[shard_id].is_syncing = False
+
+    def tick_main(self, init_cycle=False):
         # Try to create a block
         # Conditions:
         # (i) you are an active validator,
         # (ii) you have not yet made a block with this parent
 
+        # FIXME: remove
         # Check shuffling cycle
-        if self.chain.head.number % p.SHUFFLING_CYCLE == 0 and self.shuffling_cycle < self.chain.head.number / p.SHUFFLING_CYCLE:
-            shard_id_list = self.get_shard_id_list()
-            self.shuffle_shard(shard_id_list)
-            self.shuffling_cycle = self.chain.head.number / p.SHUFFLING_CYCLE
+        if init_cycle:
+            if self.chain.head.number % p.SHUFFLING_CYCLE_LENGTH == 0 and self.shuffling_cycle < self.chain.head.number / p.SHUFFLING_CYCLE_LENGTH:
+                shard_id_list = self.get_shard_id_list()
+                self.shuffle_shard(shard_id_list)
+                self.shuffling_cycle = self.chain.head.number / p.SHUFFLING_CYCLE_LENGTH
+            for shard_id in self.shard_id_list:
+                self.chain.shards[shard_id].is_syncing = False
 
         if self.chain.head_hash not in self.used_parents:
             t = self.get_timestamp()
@@ -270,7 +316,9 @@ class Validator(object):
             # Make a copy of self.transaction_queue because make_head_candidate modifies it.
             txqueue = copy.deepcopy(self.txqueue)
             blk, _ = make_head_candidate(self.chain, txqueue, coinbase=privtoaddr(self.key))
-            self.txqueue = self.txqueue.diff(blk.transactions)
+            temp_txqueue_conut = len(self.txqueue.txs)
+            self.txqueue = txqueue.diff(blk.transactions)
+            print('[txqueue size] before: {}, after: {}'.format(temp_txqueue_conut, len(self.txqueue.txs)))
 
             # option 1: call mine()
             # blk = Miner(blk).mine(rounds=100, start_nonce=0)
@@ -300,10 +348,11 @@ class Validator(object):
             self.network.broadcast(self, blk)
 
     def tick_shard(self, shard_id):
-        if self.chain.head.header.number >= p.PEROID_LENGTH and \
+        if not self.chain.shards[shard_id].is_syncing and \
+            self.chain.head.header.number >= p.PEROID_LENGTH and \
             self.chain.head.header.number % p.PEROID_LENGTH != (p.PEROID_LENGTH - 1) and \
-                self.is_collator(shard_id) and \
-                self.chain.shards[shard_id].head_hash not in self.shard_data[shard_id].used_parents:
+            self.chain.shards[shard_id].head_hash not in self.shard_data[shard_id].used_parents and \
+            self.is_collator(shard_id):
 
             # Use alias for cleaner code
             shard = self.chain.shards[shard_id]
@@ -346,9 +395,7 @@ class Validator(object):
             period_start_prevblock = self.chain.get_block(period_start_prevhash)
 
             # verify_collation_header
-            result = verify_collation_header(self.chain, collation.header)
-            self.print_id()
-            print('verify_collation_header:{}'.format(result))
+            assert verify_collation_header(self.chain, collation.header)
 
             global global_collation_counter
             global_collation_counter += 1
@@ -370,7 +417,13 @@ class Validator(object):
             self._update_shard_head(shard_id)
 
     def tick(self):
-        self.tick_main()
+        # self.tick_cycle()
+        # if len(self.chain.shard_id_list) > 0:
+        #     for k in self.chain.shards:
+        #         if not self.chain.shards[k].is_syncing:
+        #             self.tick_main()
+
+        self.tick_main(init_cycle=True) 
 
         self._initialize_tick_shard()
         for shard_id in self.shard_id_list:
@@ -382,9 +435,6 @@ class Validator(object):
         if self.cached_head == self.chain.head_hash:
             return
         self.cached_head = self.chain.head_hash
-        # if self.epoch_length != 0 and self.chain.state.block_number % self.epoch_length == 0:
-
-        self.update_activity_status()
 
         self.print_id()
         print('Head block changed: %s, will attempt creating a block at %d' % (
@@ -399,7 +449,7 @@ class Validator(object):
         self.shard_data[shard_id].cached_head = shard.head_hash
 
         self.print_id()
-        print('Head collation changed: %s' % encode_hex(shard.head_hash))
+        print('[shard %d] Head collation changed: %s' % (shard_id, encode_hex(shard.head_hash)))
 
     def withdraw(self, gasprice=1):
         """ Create and send withdrawal transaction
@@ -430,10 +480,11 @@ class Validator(object):
             rlp.encode(CollationHeader.serialize(collation.header)), gasprice=gasprice, nonce=self.head_nonce)
         self.txqueue.add_transaction(tx, force=True)
 
+        # Only for debugging, commentting out for efficiency
         # Apply on self.tick_chain_state
-        success, output = apply_transaction(temp_state, tx)
-        print('[add_header] success:{}, output:{}'.format(success, output))
-        assert success
+        # success, output = apply_transaction(temp_state, tx)
+        # print('[add_header] success:{}, output:{}'.format(success, output))
+        # assert success
 
         self.head_nonce += 1
 
@@ -446,10 +497,15 @@ class Validator(object):
 
     def new_shard(self, shard_id):
         """Add new shard
-        """
-        self.chain.init_shard(shard_id)
+        """        
+        initial_shard_state = mk_basic_state(
+            base_alloc, None, self.chain.env)
+        self.chain.add_shard(ShardChain(shard_id=shard_id, initial_state=initial_shard_state))
         self.shard_data[shard_id] = ShardData(shard_id, self.chain.shards[shard_id].head_hash)
         self.shard_id_list.add(shard_id)
+
+        # FIXME: remove
+        self.chain.shards[shard_id].activate()
 
     def shuffle_shard(self, new_shard_id_list):
         """ At the begining of a new shuffling cycle, update self.shard_id_list
@@ -458,24 +514,21 @@ class Validator(object):
         activate_set = new_shard_id_list - self.shard_id_list
 
         for shard_id in deactivate_set:
-            self.shard_data[self.shard_id].deactive()
+            self.chain.shards[shard_id].deactivate()
         for shard_id in activate_set:
             if shard_id not in self.shard_data:
                 self.new_shard(shard_id)
             else:
-                self.shard_data[self.shard_id].inactive()
-
+                self.chain.shards[shard_id].activate()
         self.shard_id_list = new_shard_id_list
+
         self.print_id()
         print('is watching shards: {}'.format(self.shard_id_list))
 
     def is_collator(self, shard_id):
         """ Check if the validator is the collator of this shard at this moment
         """
-        temp_state = self.chain.state.ephemeral_clone()
-        block = mk_block_from_prevstate(self.chain, timestamp=self.chain.state.timestamp + 14)
-        cs = get_consensus_strategy(temp_state.config)
-        cs.initialize(temp_state, block)
+        temp_state = prepare_next_state(self.chain)
 
         # print('get_num_validators: {}'.format(big_endian_to_int(self.call_msg('get_num_validators'))))
         sampled_addr = hex(big_endian_to_int(call_sample(temp_state, shard_id)))
@@ -495,14 +548,15 @@ class Validator(object):
 
     def check_collation(self, block):
         self.print_id()
-        # print('Checking if add_header tx in the block....')
-        # global global_tx_to_collation
-        # for tx in block.transactions:
-        #     if tx.hash in global_tx_to_collation:
-        #         print('tx {}: {}'.format(encode_hex(tx.hash), global_tx_to_collation[tx.hash]))
+        print('Checking if add_header tx in the block....')
+        global global_tx_to_collation
+        for tx in block.transactions:
+            if tx.hash in global_tx_to_collation:
+                print('tx {}: {}'.format(encode_hex(tx.hash), global_tx_to_collation[tx.hash]))
 
         collation_map = self.chain.parse_add_header_logs()
-
+        if len(collation_map) > 0:
+            print('collation_map: {}'.format(collation_map))
         # FIXME: Request for the collation of the given header if they don't have it
 
         self.print_id()
@@ -513,7 +567,7 @@ class Validator(object):
             self._update_shard_head(shard_id)
 
     def get_period_start_prevhash_from_contract(self, expected_period_number):
-        temp_state = self._prepare_temp_state()
+        temp_state = prepare_next_state(self.chain)
         return call_msg(
             temp_state, get_valmgr_ct(), 'get_period_start_prevhash', [expected_period_number],
             b'\xff' * 20, get_valmgr_addr()
@@ -527,22 +581,13 @@ class Validator(object):
     def get_shard_id_list(self):
         """ Get the list of shard_id that the validator may be selected in this cycle
         """
-        temp_state = self._prepare_temp_state()
+        temp_state = prepare_next_state(self.chain)
         shard_list = get_shard_list(temp_state, self.validation_code_addr)
         shard_id_list = set()
         for shard_id, value in enumerate(shard_list):
             if value:
                 shard_id_list.add(shard_id)
         return shard_id_list
-
-    def _prepare_temp_state(self):
-        """ Return temp_state for calling contract function
-        """
-        temp_state = self.chain.state.ephemeral_clone()
-        block = mk_block_from_prevstate(self.chain, timestamp=self.chain.state.timestamp + 14)
-        cs = get_consensus_strategy(temp_state.config)
-        cs.initialize(temp_state, block)
-        return temp_state
 
     def _initialize_tick_shard(self):
         """ Use self.head_nonce and self.tick_chain_state to maintain the sequence
@@ -553,3 +598,19 @@ class Validator(object):
         cs = get_consensus_strategy(self.tick_chain_state.config)
         temp_block = mk_block_from_prevstate(self.chain, timestamp=self.tick_chain_state.timestamp + 14)
         cs.initialize(self.tick_chain_state, temp_block)
+
+    def generate_transaction(self, shard_id, gasprice=GASPRICE):
+        temp_state = prepare_next_state(self.chain.shards[shard_id])
+        tx = Transaction(
+            self.chain.shards[shard_id].state.get_nonce(self.address), gasprice, STARTGAS, self.address, 0, b''
+        ).sign(self.key)
+
+        # TODO: set network_id for different shard
+
+        # Apply on self.tick_chain_state
+        success, output = apply_transaction(temp_state, tx)
+        print('[add_header] success:{}, output:{}'.format(success, output))
+        assert success
+
+        self.shard_data[shard_id].txqueue.add_transaction(tx)
+        self.broadcast(self, tx, network_id=10000+shard_id)

@@ -7,6 +7,7 @@ from ethereum.config import Env
 from ethereum.messages import apply_transaction
 from ethereum.consensus_strategy import get_consensus_strategy
 from ethereum.utils import privtoaddr, big_endian_to_int
+from ethereum.common import mk_block_from_prevstate
 
 from sharding.config import sharding_config
 from sharding.validator_manager_utils import (
@@ -94,3 +95,13 @@ def validator_inject(state, privkey):
     success, _ = apply_transaction(state, tx)
     assert success
     return validation_code_addr
+
+
+def prepare_next_state(chain):
+    """ Return temp_state for calling contract function
+    """
+    temp_state = chain.state.ephemeral_clone()
+    block = mk_block_from_prevstate(chain, timestamp=chain.state.timestamp + 14)
+    cs = get_consensus_strategy(temp_state.config)
+    cs.initialize(temp_state, block)
+    return temp_state
