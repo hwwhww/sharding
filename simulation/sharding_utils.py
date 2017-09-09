@@ -105,3 +105,15 @@ def prepare_next_state(chain):
     cs = get_consensus_strategy(temp_state.config)
     cs.initialize(temp_state, block)
     return temp_state
+
+
+def to_network_id(shard_id):
+    """ Transform shard_id to network_id
+    """
+    return 10000 + shard_id
+
+
+def to_shard_id(network_id):
+    """ Transform network_id to shard_id
+    """
+    return network_id - 10000
