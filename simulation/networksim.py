@@ -23,11 +23,16 @@ class NetworkSimulator():
         assert len(peer_list) > 1
         while len(p) <= num_peers // 2:
             p.append(random.choice(peer_list))
-            if p[-1] == agent:
+            if p[-1] == agent and (
+                    agent.id not in self.peers[network_id] or p[-1] not in self.peers[network_id][agent.id]):
                 p.pop()
         self.peers[network_id][agent.id] = self.peers[network_id].get(agent.id, []) + p
+        self.peers[network_id][agent.id] = list(set(self.peers[network_id][agent.id]))
         for peer in p:
             self.peers[network_id][peer.id] = self.peers[network_id].get(peer.id, []) + [agent]
+            self.peers[network_id][peer.id] = list(set(self.peers[network_id][peer.id]))
+        print('Agent [V {}] has peers:{} in network_id {}'.format(
+            agent.id, [v.id for v in self.peers[network_id][agent.id]], network_id))
 
     def generate_peers(self, num_peers=5, network_id=1):
         self.clear_peers(network_id)
@@ -51,11 +56,16 @@ class NetworkSimulator():
     def broadcast(self, sender, obj, additional_latency=0, network_id=1):
         # recv_time = self.time + self.latency_distribution_sample() + additional_latency
         # print('[V {}] broadcasts object, now is {}, recv_time about {} '.format(sender, self.time, recv_time))
-        for p in self.peers[network_id][sender.id]:
-            recv_time = self.time + self.latency_distribution_sample() + additional_latency
-            if recv_time not in self.objqueue:
-                self.objqueue[recv_time] = []
-            self.objqueue[recv_time].append((p, obj, network_id))
+        try:
+            for p in self.peers[network_id][sender.id]:
+                recv_time = self.time + self.latency_distribution_sample() + additional_latency
+                if recv_time not in self.objqueue:
+                    self.objqueue[recv_time] = []
+                self.objqueue[recv_time].append((p, obj, network_id))
+        except KeyError:
+            print('network_id: {}'.format(network_id))
+            print('sender.id: {}'.format(sender.id))
+            raise
 
     def direct_send(self, to_id, obj, network_id=1):
         for a in self.agents:

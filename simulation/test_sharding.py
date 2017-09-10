@@ -57,53 +57,69 @@ def test_simulation():
     start_time = time.time()
     print('start headblock.number = {}, state.number = {}'.format(validators[0].chain.head.number, validators[0].chain.state.block_number))
 
-    for i in range(p.TOTAL_TICKS):
-        # Print progress bar in stderr
-        progress(i, p.TOTAL_TICKS, status='Simulating.....')
+    def print_result():
+        print('Total ticks: {}'.format(p.TOTAL_TICKS))
+        print('Simulation precision: {}'.format(p.PRECISION))
+        print('------')
+        print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
+        print('Network reliability: {}'.format(p.RELIABILITY))
+        print('------')
+        print('Validator clock offset: {}'.format(p.TIME_OFFSET))
+        print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
+        print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
+        print('------')
+        print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
+        print('Number of peers: {}'.format(p.NUM_PEERS))
+        print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
+        print('------')
+        print('Peroid length: {}'.format(p.PEROID_LENGTH))
+        print('Shuffling cycle length: {}'.format(p.SHUFFLING_CYCLE_LENGTH))
+        print('------')
+        block_num_list = [v.chain.head.header.number if v.chain.head else None for v in validators]
+        print('Validator block heads:', block_num_list)
+        print('Total blocks created:', validator.global_block_counter)
+        avg_block_length = np.mean(block_num_list)
+        print('Average Block Length: {}'.format(avg_block_length))
+        print('Average Block Time: {} sec'.format((n.time * p.PRECISION) / avg_block_length))
 
-        n.tick()
-        if i % 100 == 0:
-            print('%d ticks passed' % i)
-            print('Validator block heads:', [v.chain.head.header.number if v.chain.head else None for v in validators])
-            print('Total blocks created:', validator.global_block_counter)
+        min_block_num = np.min(block_num_list)
+        print('Min Block Number: {}'.format(min_block_num))
+        print('Min Block Hash', [encode_hex(v.chain.get_block_by_number(min_block_num).header.hash[:4]) if v.chain.head else None for v in validators])
 
-        # if i == 1000:
-        #     print('Withdrawing a few validators')
-        #     for v in validators[:5]:
-        #         v.withdraw()
-    print('Total ticks: {}'.format(p.TOTAL_TICKS))
-    print('Simulation precision: {}'.format(p.PRECISION))
-    print('------')
-    print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
-    print('Network reliability: {}'.format(p.RELIABILITY))
-    print('------')
-    print('Validator clock offset: {}'.format(p.TIME_OFFSET))
-    print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
-    print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
-    print('------')
-    print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
-    print('Number of peers: {}'.format(p.NUM_PEERS))
-    print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
-    print('------')
-    block_num_list = [v.chain.head.header.number if v.chain.head else None for v in validators]
-    print('Validator block heads:', block_num_list)
-    print('Total blocks created:', validator.global_block_counter)
-    avg_block_length = np.mean(block_num_list)
-    print('Average Block Length: {}'.format(avg_block_length))
-    print('Average Block Time: {} sec'.format((n.time * p.PRECISION) / avg_block_length))
+        print('------')
+        for shard_id in range(p.SHARD_COUNT):
+            print('[shard {}] Validator collation heads: {}'.format(
+                shard_id,
+                [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head) if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None for v in validators]
+            ))
+        print('Total collations created:', validator.global_collation_counter)
+        print('Peers of each shuffling cycle and shard:')
+        for shard_id in validator.global_peer_list:
+            print('  shard ', shard_id)
+            for cycle in validator.global_peer_list[shard_id]:
+                print('    cycle ', cycle, ' ', sorted([v.id for v in validator.global_peer_list[shard_id][cycle]]))
+        print("--- %s seconds ---" % (time.time() - start_time))
 
-    min_block_num = np.min(block_num_list)
-    print('Min Block Number: {}'.format(min_block_num))
-    print('Min Block Hash', [encode_hex(v.chain.get_block_by_number(min_block_num).header.hash[:4]) if v.chain.head else None for v in validators])
+    try:
+        for i in range(p.TOTAL_TICKS):
+            # Print progress bar in stderr
+            progress(i, p.TOTAL_TICKS, status='Simulating.....')
 
-    print('------')
-    for shard_id in range(p.SHARD_COUNT):
-        print('[shard {}] Validator collation heads: {}'.format(
-            shard_id,
-            [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head) if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None for v in validators]
-        ))
-    print('Total collations created:', validator.global_collation_counter)
-    print("--- %s seconds ---" % (time.time() - start_time))
+            n.tick()
+            if i % 100 == 0:
+                print('%d ticks passed' % i)
+                print('Validator block heads:', [v.chain.head.header.number if v.chain.head else None for v in validators])
+                print('Total blocks created:', validator.global_block_counter)
+
+            # if i == 1000:
+            #     print('Withdrawing a few validators')
+            #     for v in validators[:5]:
+            #         v.withdraw()
+    except:
+        raise
+    finally:
+        print_result()
+
     print('[END]')
 
     return

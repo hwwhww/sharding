@@ -7,10 +7,10 @@ class Config(object):
     VALIDATOR_COUNT = 20   # Main chain
 
     # System Parameters
-    SHARD_COUNT = 2
-    SHARD_VALIDATOR_COUNT = 2
+    SHARD_COUNT = 2               # NOTE: Need to modify contract too
+    # SHARD_VALIDATOR_COUNT = 10  # NOTE: only setting in contract
     PEROID_LENGTH = 5
-    SHUFFLING_CYCLE = 200
+    SHUFFLING_CYCLE_LENGTH = 20   # NOTE: Need to modify contract too
 
     # Network Parameters
     LATENCY = 1.5 / PRECISION
