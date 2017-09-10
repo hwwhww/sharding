@@ -92,7 +92,9 @@ def test_simulation():
                 shard_id,
                 [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head) if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None for v in validators]
             ))
-        print('Total collations created:', validator.global_collation_counter)
+        print('Total collations created: ')
+        for shard_id in validator.global_peer_list:
+            print('  shard: {}   {}'.format(shard_id, validator.global_collation_counter[shard_id]))
         print('Peers of each shuffling cycle and shard:')
         for shard_id in validator.global_peer_list:
             print('  shard ', shard_id)
