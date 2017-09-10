@@ -58,48 +58,52 @@ def test_simulation():
     print('start headblock.number = {}, state.number = {}'.format(validators[0].chain.head.number, validators[0].chain.state.block_number))
 
     def print_result():
+        print('------ [Simulation End] ------')
+        print('====== Parameters ======')
+        print('------ Measuration Parameters ------')
         print('Total ticks: {}'.format(p.TOTAL_TICKS))
         print('Simulation precision: {}'.format(p.PRECISION))
-        print('------')
-        print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
-        print('Network reliability: {}'.format(p.RELIABILITY))
-        print('------')
-        print('Validator clock offset: {}'.format(p.TIME_OFFSET))
-        print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
-        print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
-        print('------')
+        print('------ System Parameters ------')
         print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
-        print('Number of peers: {}'.format(p.NUM_PEERS))
-        print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
-        print('------')
+        print('Shard count: {}'.format(p.SHARD_COUNT))
         print('Peroid length: {}'.format(p.PEROID_LENGTH))
         print('Shuffling cycle length: {}'.format(p.SHUFFLING_CYCLE_LENGTH))
-        print('------')
+        print('SERENITY_FORK_BLKNUM: {}'.format(p.SERENITY_FORK_BLKNUM))
+        print('------ Network Parameters ------')
+        print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
+        print('Network reliability: {}'.format(p.RELIABILITY))
+        print('Number of peers: {}'.format(p.NUM_PEERS))
+        print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
+        print('------ Validator Parameters ------')
+        print('Validator clock offset: {}'.format(p.TIME_OFFSET))
+        print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
+        print('Targe block time: {} sec'.format(p.TARGET_BLOCK_TIME))
+        print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
+        print('------ Result ------')
         block_num_list = [v.chain.head.header.number if v.chain.head else None for v in validators]
         print('Validator block heads:', block_num_list)
         print('Total blocks created:', validator.global_block_counter)
         avg_block_length = np.mean(block_num_list)
         print('Average Block Length: {}'.format(avg_block_length))
-        print('Average Block Time: {} sec'.format((n.time * p.PRECISION) / avg_block_length))
-
+        if avg_block_length > 0:
+            print('Average Block Time: {} sec'.format((n.time * p.PRECISION) / avg_block_length))
         min_block_num = np.min(block_num_list)
         print('Min Block Number: {}'.format(min_block_num))
         print('Min Block Hash', [encode_hex(v.chain.get_block_by_number(min_block_num).header.hash[:4]) if v.chain.head else None for v in validators])
-
-        print('------')
+        print('------ Validator collation heads ------')
         for shard_id in range(p.SHARD_COUNT):
-            print('[shard {}] Validator collation heads: {}'.format(
+            print('    [shard {}] {}'.format(
                 shard_id,
                 [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head) if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None for v in validators]
             ))
         print('Total collations created: ')
-        for shard_id in validator.global_peer_list:
-            print('  shard: {}   {}'.format(shard_id, validator.global_collation_counter[shard_id]))
+        for shard_id in sorted(validator.global_peer_list):
+            print('    [shard {}]   {}'.format(shard_id, validator.global_collation_counter[shard_id]))
         print('Peers of each shuffling cycle and shard:')
         for shard_id in validator.global_peer_list:
-            print('  shard ', shard_id)
+            print('  [shard {}]'.format(shard_id))
             for cycle in validator.global_peer_list[shard_id]:
-                print('    cycle ', cycle, ' ', sorted([v.id for v in validator.global_peer_list[shard_id][cycle]]))
+                print('        cycle ', cycle, ': ', sorted([v.id for v in validator.global_peer_list[shard_id][cycle]]))
         print("--- %s seconds ---" % (time.time() - start_time))
 
     try:

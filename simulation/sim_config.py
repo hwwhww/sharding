@@ -1,16 +1,19 @@
 class Config(object):
-    TOTAL_TICKS = 24000
-    PRECISION = 0.05
-    SERENITY_FORK_BLKNUM = 100
-
+    # Measuration Parameters
+    TOTAL_TICKS = 30000
+    PRECISION = 0.02
     INITIAL_TIMESTAMP = 1
-    VALIDATOR_COUNT = 20   # Main chain
+
+    # Acceleration Parameters
+    MINIMIZE_CHECKING = True
 
     # System Parameters
-    SHARD_COUNT = 2               # NOTE: Need to modify contract too
-    # SHARD_VALIDATOR_COUNT = 10  # NOTE: only setting in contract
-    PEROID_LENGTH = 5
-    SHUFFLING_CYCLE_LENGTH = 20   # NOTE: Need to modify contract too
+    VALIDATOR_COUNT = 10            # Main chain PoW nodes
+    SHARD_COUNT = 1                 # NOTE: Need to modify contract too
+    # NUM_VALIDATOR_PER_CYCLE = 10  # NOTE: Only setting in contract
+    PEROID_LENGTH = 5               # NOTE: Need to modify contract too
+    SHUFFLING_CYCLE_LENGTH = 20     # NOTE: Need to modify contract too
+    SERENITY_FORK_BLKNUM = 0
 
     # Network Parameters
     LATENCY = 1.5 / PRECISION

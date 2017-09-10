@@ -41,9 +41,9 @@ class NetworkSimulator():
 
     def tick(self):
         if self.time in self.objqueue:
-            for recipient, obj, network_id in self.objqueue[self.time]:
+            for recipient, obj, network_id, sender in self.objqueue[self.time]:
                 if random.random() < self.reliability:
-                    recipient.on_receive(obj, network_id)
+                    recipient.on_receive(obj, network_id, sender)
             del self.objqueue[self.time]
         for a in self.agents:
             a.tick()
@@ -61,19 +61,19 @@ class NetworkSimulator():
                 recv_time = self.time + self.latency_distribution_sample() + additional_latency
                 if recv_time not in self.objqueue:
                     self.objqueue[recv_time] = []
-                self.objqueue[recv_time].append((p, obj, network_id))
+                self.objqueue[recv_time].append((p, obj, network_id, sender.id))
         except KeyError:
             print('network_id: {}'.format(network_id))
             print('sender.id: {}'.format(sender.id))
             raise
 
-    def direct_send(self, to_id, obj, network_id=1):
+    def direct_send(self, sender, to_id, obj, network_id=1):
         for a in self.agents:
             if a.id == to_id:
                 recv_time = self.time + self.latency_distribution_sample()
                 if recv_time not in self.objqueue:
                     self.objqueue[recv_time] = []
-                self.objqueue[recv_time].append((a, obj, network_id))
+                self.objqueue[recv_time].append((a, obj, network_id, sender.id))
 
     def knock_offline_random(self, n, network_id=1):
         ko = {}

@@ -151,7 +151,7 @@ class Validator(object):
         print('[%d] [%d] [V %d] [B%d] ' % (self.network.time, self.get_timestamp(), self.id, self.chain.head.number), end='')
         print(*args)
 
-    def on_receive(self, obj, network_id=1):
+    def on_receive(self, obj, network_id, sender_id):
         if isinstance(obj, list):
             for _obj in obj:
                 self.on_receive(_obj, network_id)
@@ -159,31 +159,31 @@ class Validator(object):
         if obj.hash in self.received_objects:
             return
         if isinstance(obj, Block):
-            self.on_receive_block(obj, network_id)
+            self.on_receive_block(obj, network_id, sender_id)
         elif isinstance(obj, Collation):
-            self.on_receive_collation(obj, network_id)
+            self.on_receive_collation(obj, network_id, sender_id)
         elif isinstance(obj, Transaction):
-            self.on_receive_transaction(obj, network_id)
+            self.on_receive_transaction(obj, network_id, sender_id)
         elif isinstance(obj, GetBlockRequest):
-            self.on_receive_get_block_request(obj, network_id)
+            self.on_receive_get_block_request(obj, network_id, sender_id)
         elif isinstance(obj, GetCollationRequest):
-            self.on_receive_get_collation_request(obj, network_id)
+            self.on_receive_get_collation_request(obj, network_id, sender_id)
         elif isinstance(obj, ShardSyncRequest):
-            self.on_receive_shard_sync_request(obj, network_id)
+            self.on_receive_shard_sync_request(obj, network_id, sender_id)
         elif isinstance(obj, ShardSyncResponse):
-            self.on_receive_shard_sync_response(obj, network_id)
+            self.on_receive_shard_sync_response(obj, network_id, sender_id)
         elif isinstance(obj, FastSyncRequest):
-            self.on_receive_fast_sync_request(obj, network_id)
+            self.on_receive_fast_sync_request(obj, network_id, sender_id)
         elif isinstance(obj, FastSyncResponse):
-            self.on_receive_fast_sync_response(obj, network_id)
+            self.on_receive_fast_sync_response(obj, network_id, sender_id)
 
         self.received_objects[obj.hash] = True
         if not p.MINIMIZE_CHECKING:
             for x in self.chain.get_chain():
                 assert x.hash in self.received_objects
 
-    def on_receive_block(self, obj, network_id):
-        self.print_info('Receiving Block', obj)
+    def on_receive_block(self, obj, network_id, sender_id):
+        self.print_info('Receiving Block {} from [V {}]'.format(obj, sender_id))
         if not p.MINIMIZE_CHECKING:
             assert obj.hash not in self.chain.get_chain()
 
@@ -197,7 +197,7 @@ class Validator(object):
             for collation_hash in missing_collations[shard_id]:
                 self.request_collation(shard_id, collation_hash)
             self.shard_data[shard_id].missing_collations.update(missing_collations[shard_id])
-        if block_success:
+        if block_success and self.is_SERENITY():
             self.check_collation(obj)
 
         self.network.broadcast(self, obj)
@@ -208,8 +208,8 @@ class Validator(object):
             self.finish_mining_timestamp = self.get_timestamp()
             self.mining_block = None
 
-    def on_receive_collation(self, obj, network_id):
-        self.print_info('Receiving Collation', obj, network_id)
+    def on_receive_collation(self, obj, network_id, sender_id):
+        self.print_info('Receiving Collation {} from [V {}]'.format(obj, sender_id))
 
         shard_id = obj.header.shard_id
         if shard_id not in self.shard_id_list:
@@ -227,14 +227,14 @@ class Validator(object):
         # Check if the given collation is in the missing collation list
         # If yes, add and reorganize head collation
         if collation_success and obj.hash in self.shard_data[shard_id].missing_collations:
-            self.print_info('Handling waiting collation: {}'.format(encode_hex(obj.hash)))
+            self.print_info('Handling the missing collation: {}'.format(encode_hex(obj.hash)))
             block = self.shard_data[shard_id].missing_collations[obj.hash]
             self.chain.reorganize_head_collation(block, obj)
             self.update_shard_head(shard_id)
             del self.shard_data[shard_id].missing_collations[obj.hash]
 
-    def on_receive_transaction(self, obj, network_id):
-        self.print_info('Receiving Transaction', obj)
+    def on_receive_transaction(self, obj, network_id, sender_id):
+        self.print_info('Receiving Transaction {} from [V {}]'.format(obj, sender_id))
 
         if obj.gasprice < self.mingasprice:
             self.print_info('Gasprice too low', obj.gasprice)
@@ -247,23 +247,23 @@ class Validator(object):
             self.print_info('Added transaction, txqueue size %d' % len(self.txqueue.txs))
         self.network.broadcast(self, obj)
 
-    def on_receive_get_block_request(self, obj, network_id):
-        self.print_info('Receiving GetBlockRequest', obj)
+    def on_receive_get_block_request(self, obj, network_id, sender_id):
+        self.print_info('Receiving GetBlockRequest {} from [V {}]'.format(obj, sender_id))
         block = self.chain.get_block(obj.block_hash) if self.chain else None
         if block:
-            self.network.direct_send(to_id=obj.peer_id, obj=block, network_id=network_id)
+            self.network.direct_send(sender=self, to_id=obj.peer_id, obj=block, network_id=network_id)
             self.print_info('Sent the block {} to V {}'.format(encode_hex(obj.block_hash), obj.peer_id))
 
-    def on_receive_get_collation_request(self, obj, network_id):
-        self.print_info('Receiving GetCollationRequest', obj)
+    def on_receive_get_collation_request(self, obj, network_id, sender_id):
+        self.print_info('Receiving GetCollationRequest {} from [V {}]'.format(obj, sender_id))
         shard_id = to_shard_id(network_id)
         collation = self.chain.shards[shard_id].get_collation(obj.collation_hash) if self.chain.has_shard(shard_id) else None
         if collation:
-            self.network.direct_send(to_id=obj.peer_id, obj=collation, network_id=network_id)
+            self.network.direct_send(sender=self, to_id=obj.peer_id, obj=collation, network_id=network_id)
             self.print_info('Sent the collation {} to V {}'.format(encode_hex(obj.collation_hash), obj.peer_id))
 
-    def on_receive_shard_sync_request(self, obj, network_id):
-        self.print_info('Receiving ShardSyncRequest', obj)
+    def on_receive_shard_sync_request(self, obj, network_id, sender_id):
+        self.print_info('Receiving ShardSyncRequest {} from [V {}]'.format(obj, sender_id))
 
         shard_id = to_shard_id(network_id)
         if shard_id not in self.chain.shard_id_list:
@@ -280,10 +280,10 @@ class Validator(object):
             c = self.chain.shards[shard_id].get_collation(c.header.parent_collation_hash)
         self.print_info('collations: {}'.format([encode_hex(c.hash) for c in collations[::-1]]))
         res = ShardSyncResponse(collations=collations[::-1])
-        self.network.direct_send(to_id=obj.peer_id, obj=res, network_id=network_id)
+        self.network.direct_send(sender=self, to_id=obj.peer_id, obj=res, network_id=network_id)
 
-    def on_receive_shard_sync_response(self, obj, network_id):
-        self.print_info('Receiving ShardSyncResponse', obj)
+    def on_receive_shard_sync_response(self, obj, network_id, sender_id):
+        self.print_info('Receiving ShardSyncResponse {} from [V {}]'.format(obj, sender_id))
 
         shard_id = to_shard_id(network_id)
         if shard_id not in self.shard_id_list:
@@ -315,8 +315,8 @@ class Validator(object):
         self.chain.shards[shard_id] = shard
         self.chain.shards[shard_id].is_syncing = False
 
-    def on_receive_fast_sync_request(self, obj, network_id):
-        self.print_info('Receiving FastSyncRequest', obj)
+    def on_receive_fast_sync_request(self, obj, network_id, sender_id):
+        self.print_info('Receiving FastSyncRequest {} from [V {}]'.format(obj, sender_id))
 
         shard_id = to_shard_id(network_id)
         shard = self.chain.shards[shard_id]  # alias
@@ -331,10 +331,10 @@ class Validator(object):
             collation_blockhash_lists=rlp.encode(json.dumps(shard.collation_blockhash_lists_to_dict())),
             head_collation_of_block=rlp.encode(json.dumps(shard.head_collation_of_block_to_dict()))
         )
-        self.network.direct_send(to_id=obj.peer_id, obj=res, network_id=network_id)
+        self.network.direct_send(sender=self, to_id=obj.peer_id, obj=res, network_id=network_id)
 
-    def on_receive_fast_sync_response(self, obj, network_id):
-        self.print_info('Receiving FastSyncResponse', obj)
+    def on_receive_fast_sync_response(self, obj, network_id, sender_id):
+        self.print_info('Receiving FastSyncResponse {} from [V {}]'.format(obj, sender_id))
 
         shard_id = to_shard_id(network_id)
         if shard_id not in self.shard_id_list:
@@ -372,9 +372,12 @@ class Validator(object):
             self.tick_shard(shard_id)
 
     def tick_cycle(self):
+        if not self.is_SERENITY():
+            return
+
         # Check shuffling cycle
         current_shuffling_cycle = self.chain.head.number // p.SHUFFLING_CYCLE_LENGTH
-        if self.chain.head.number % p.SHUFFLING_CYCLE_LENGTH == 0 and \
+        if (self.is_SERENITY(next_block_fork=True) or self.chain.head.number % p.SHUFFLING_CYCLE_LENGTH == 0) and \
                 self.shuffling_cycle < current_shuffling_cycle:
             self.shuffling_cycle = current_shuffling_cycle
             shard_id_list = self.get_shard_id_list()
@@ -391,9 +394,10 @@ class Validator(object):
                     self.chain.shards[shard_id].is_syncing = False
 
     def tick_main(self, init_cycle=False):
-        for k in self.shard_id_list:
-            if self.chain.shards[k].is_syncing:
-                return
+        if self.is_SERENITY(about_to=True):
+            for k in self.shard_id_list:
+                if self.chain.shards[k].is_syncing:
+                    return
         self.tick_broadcast_block()
         self.tick_create_block()
 
@@ -464,6 +468,9 @@ class Validator(object):
         self.print_info('Made block %d (%s) with timestamp %d, tx count: %d' % (blk.header.number, encode_hex(blk.header.hash), blk.timestamp, blk.transaction_count))
 
     def tick_shard(self, shard_id):
+        if not self.is_SERENITY(about_to=True):
+            return
+
         if not self.check_collator(shard_id):
             return
 
@@ -679,6 +686,14 @@ class Validator(object):
         self.shard_id_list = new_shard_id_list
         self.print_info('is watching shards: {}'.format(self.shard_id_list))
 
+    def is_SERENITY(self, next_block_fork=False, about_to=False):
+        if next_block_fork:
+            return self.chain.head.number == p.SERENITY_FORK_BLKNUM - 1
+        elif about_to:
+            return self.chain.head.number >= p.SERENITY_FORK_BLKNUM - 1
+        else:
+            return self.chain.head.number >= p.SERENITY_FORK_BLKNUM
+
     def check_collator(self, shard_id):
         """ Check if the validator can create the collation at this moment
         """
@@ -783,11 +798,11 @@ class Validator(object):
         """
         req = ShardSyncRequest(self.id)
         self.print_info('Asking V {} for a ShardSyncRequest @network_id: {}'.format(peer_id, to_network_id(shard_id)))
-        self.network.direct_send(to_id=peer_id, obj=req, network_id=to_network_id(shard_id))
+        self.network.direct_send(sender=self, to_id=peer_id, obj=req, network_id=to_network_id(shard_id))
 
     def request_fast_sync(self, shard_id, peer_id):
         """ Broadcast FastSyncRequest
         """
         req = FastSyncRequest(self.id)
         self.print_info('Asking V {} for a FastSyncRequest @network_id: {}'.format(peer_id, to_network_id(shard_id)))
-        self.network.direct_send(to_id=peer_id, obj=req, network_id=to_network_id(shard_id))
+        self.network.direct_send(sender=self, to_id=peer_id, obj=req, network_id=to_network_id(shard_id))
