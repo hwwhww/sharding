@@ -185,7 +185,7 @@ def get_shard_list(valcode_addr: address) -> bool[100]:
 
 # Attempts to process a collation header, returns True on success, reverts on failure.
 def add_header(header: bytes <= 4096) -> bool:
-    values = RLPList(header, [num, num, bytes32, bytes32, bytes32, address, bytes32, bytes32, bytes])
+    values = RLPList(header, [num, num, bytes32, bytes32, bytes32, address, bytes32, bytes32, num, bytes])
     shard_id = values[0]
     expected_period_number = values[1]
     period_start_prevhash = values[2]
@@ -194,7 +194,8 @@ def add_header(header: bytes <= 4096) -> bool:
     collation_coinbase = values[5]
     post_state_root = values[6]
     receipt_root = values[7]
-    sig = values[8]
+    collation_number = values[8]
+    sig = values[9]
 
     # Check if the header is valid
     assert shard_id >= 0
@@ -218,8 +219,12 @@ def add_header(header: bytes <= 4096) -> bool:
     collator_valcode_addr = self.sample(shard_id)
     sighash = extract32(raw_call(self.sighasher_addr, header, gas=200000, outsize=32), 0)
     assert extract32(raw_call(collator_valcode_addr, concat(sighash, sig), gas=self.sig_gas_limit, outsize=32), 0) == as_bytes32(1)
-    # Add the header
+
+    # Check score == collation_number
     _score = self.collation_headers[shard_id][parent_collation_hash].score + 1
+    assert collation_number == _score
+
+    # Add the header
     self.collation_headers[shard_id][entire_header_hash] = {
         parent_collation_hash: parent_collation_hash,
         score: _score
