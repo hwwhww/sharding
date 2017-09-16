@@ -34,6 +34,18 @@ class NetworkSimulator():
         print('Agent [V {}] has peers:{} in network_id {}'.format(
             agent.id, [v.id for v in self.peers[network_id][agent.id]], network_id))
 
+    def remove_peer(self, agent, peer, network_id=1):
+        if peer.id in self.peers[network_id][agent.id]:
+            self.peers[network_id][agent.id].remove(peer.id)
+        if agent.id in self.peers[network_id][peer.id]:
+            self.peers[network_id][peer.id].remove(agent.id)
+
+    def get_peers(self, agent, network_id):
+        try:
+            return self.peers[network_id][agent.id]
+        except KeyError:
+            return []
+
     def generate_peers(self, num_peers=5, network_id=1):
         self.clear_peers(network_id)
         for a in self.agents:
@@ -57,11 +69,14 @@ class NetworkSimulator():
         # recv_time = self.time + self.latency_distribution_sample() + additional_latency
         # print('[V {}] broadcasts object, now is {}, recv_time about {} '.format(sender, self.time, recv_time))
         try:
-            for p in self.peers[network_id][sender.id]:
-                recv_time = self.time + self.latency_distribution_sample() + additional_latency
-                if recv_time not in self.objqueue:
-                    self.objqueue[recv_time] = []
-                self.objqueue[recv_time].append((p, obj, network_id, sender.id))
+            if sender.id in self.peers[network_id]:
+                for p in self.peers[network_id][sender.id]:
+                    recv_time = self.time + self.latency_distribution_sample() + additional_latency
+                    if recv_time not in self.objqueue:
+                        self.objqueue[recv_time] = []
+                    self.objqueue[recv_time].append((p, obj, network_id, sender.id))
+            else:
+                print('[broadcast] V {} has no peer'.format(sender.id))
         except KeyError:
             print('network_id: {}'.format(network_id))
             print('sender.id: {}'.format(sender.id))
