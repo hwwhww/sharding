@@ -11,7 +11,7 @@ class Config(object):
     VALIDATOR_COUNT = 10            # Main chain PoW nodes
     SHARD_COUNT = 1                 # NOTE: Need to modify contract too
     # NUM_VALIDATOR_PER_CYCLE = 10  # NOTE: Only setting in contract
-    PEROID_LENGTH = 5               # NOTE: Need to modify contract too
+    PERIOD_LENGTH = 5               # NOTE: Need to modify contract too
     SHUFFLING_CYCLE_LENGTH = 20     # NOTE: Need to modify contract too
     SERENITY_FORK_BLKNUM = 0
 
