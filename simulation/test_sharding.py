@@ -66,7 +66,7 @@ def test_simulation():
         print('------ System Parameters ------')
         print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
         print('Shard count: {}'.format(p.SHARD_COUNT))
-        print('Peroid length: {}'.format(p.PEROID_LENGTH))
+        print('Peroid length: {}'.format(p.PERIOD_LENGTH))
         print('Shuffling cycle length: {}'.format(p.SHUFFLING_CYCLE_LENGTH))
         print('SERENITY_FORK_BLKNUM: {}'.format(p.SERENITY_FORK_BLKNUM))
         print('------ Network Parameters ------')
