@@ -47,8 +47,8 @@ from message import (
     FastSyncRequest, FastSyncResponse
 )
 
-BLOCK_FELL_BEHIND_ALERT = 3
-COLLATION_FELL_BEHIND_ALERT = 2
+BLOCK_BEHIND_THRESHOLD = 3
+COLLATION_BEHIND_THRESHOLD = 2
 GET_BLOCKS_AMOUNT = 20
 GET_COLLATIONS_AMOUNT = 20
 
@@ -158,9 +158,6 @@ class Validator(object):
     def is_watching(self, shard_id):
         return shard_id in self.shard_id_list
 
-    def is_allocated(self, shard_id):
-        return shard_id in self.chain.shard_id_list
-
     def print_info(self, *args):
         """ Print timestamp and validator_id as prefix
         """
@@ -253,18 +250,23 @@ class Validator(object):
         if block_success and self.is_SERENITY():
             self.check_collation(obj)
 
-        self.network.broadcast(self, obj)
+        # self.network.broadcast(self, obj)
+        self.format_broadcast(network_id, obj, content=None)
         head_is_updated = self.update_main_head()
 
         # If head changed during the current validator is mining,
         # they should stop and start to produce other new block
-        # if (self.mining_block is not None) and head_is_updated and \
-        #         self.finish_mining_timestamp - self.local_timestamp > 5:
-        #     self.finish_mining_timestamp = self.local_timestamp
-        #     self.mining_block = None
+        if (self.mining_block is not None) and head_is_updated and \
+                self.finish_mining_timestamp - self.local_timestamp:
+            self.finish_mining_timestamp = self.local_timestamp
+            # add the transactions back
+            for tx in self.mining_block.transactions:
+                self.txqueue.add_transaction(tx)
+            self.txqueue.diff(obj.transactions)  # TODO: or cache them?
+            self.mining_block = None
 
         # Check if the validator fell behind
-        if obj.header.number > self.chain.head.number + BLOCK_FELL_BEHIND_ALERT:
+        if obj.header.number > self.chain.head.number + BLOCK_BEHIND_THRESHOLD:
             req = GetBlockHeadersRequest(self.local_timestamp, obj.header.hash, GET_BLOCKS_AMOUNT)
             self.format_direct_send(
                 network_id, sender_id, req,
@@ -283,7 +285,8 @@ class Validator(object):
             self.chain.handle_ignored_collation,
             self.chain.update_head_collation_of_block)
         self.print_info('collation_success: {}'.format(collation_success))
-        self.network.broadcast(self, obj, network_id)
+        # self.network.broadcast(self, obj, network_id)
+        self.format_broadcast(network_id, obj, content=None)
 
         # Check if the given collation is in the missing collation list
         # If yes, add and reorganize head collation
@@ -295,7 +298,7 @@ class Validator(object):
             del self.shard_data[shard_id].missing_collations[obj.header.hash]
 
         # Check if the validator fell behind
-        if obj.header.number > self.chain.shards[shard_id].head.number + COLLATION_FELL_BEHIND_ALERT:
+        if obj.header.number > self.chain.shards[shard_id].head.number + COLLATION_BEHIND_THRESHOLD:
             req = GetCollationHeadersRequest(self.local_timestamp, obj.hash, GET_COLLATIONS_AMOUNT)
             self.format_direct_send(
                 network_id, sender_id, req,
@@ -320,7 +323,7 @@ class Validator(object):
                 self.shard_data[shard_id].txqueue.add_transaction(obj)
                 self.print_info('Added transaction to shard %s, txqueue size %d' % (shard_id, len(self.txqueue.txs)))
 
-        self.network.broadcast(self, obj)
+        self.format_broadcast(network_id, obj, content=None)
 
     @format_receiving
     def on_receive_get_block_headers_request(self, obj, network_id, sender_id):
@@ -361,7 +364,7 @@ class Validator(object):
     @format_receiving
     def on_receive_get_collation_headers_request(self, obj, network_id, sender_id):
         shard_id = to_shard_id(network_id)
-        if self.is_allocated(shard_id):
+        if not self.chain.has_shard(shard_id):
             return
 
         collation = self.chain.shards[shard_id].get_collation(obj.collation)
@@ -404,7 +407,7 @@ class Validator(object):
     @format_receiving
     def on_receive_shard_sync_request(self, obj, network_id, sender_id):
         shard_id = to_shard_id(network_id)
-        if self.is_allocated(shard_id):
+        if not self.chain.has_shard(shard_id):
             return
 
         collations = []
@@ -456,7 +459,7 @@ class Validator(object):
     def on_receive_fast_sync_request(self, obj, network_id, sender_id):
         shard_id = to_shard_id(network_id)
         shard = self.chain.shards[shard_id]  # alias
-        if not self.is_allocated(shard_id):
+        if not self.chain.has_shard(shard_id):
             return
 
         state_data = json.dumps(shard.state.to_snapshot())
@@ -467,7 +470,7 @@ class Validator(object):
             collation_blockhash_lists=rlp.encode(json.dumps(shard.collation_blockhash_lists_to_dict())),
             head_collation_of_block=rlp.encode(json.dumps(shard.head_collation_of_block_to_dict()))
         )
-        self.network.direct_send(sender=self, to_id=obj.peer_id, obj=res, network_id=network_id)
+        self.format_direct_send(network_id, sender_id, res, content=None)
 
     @format_receiving
     def on_receive_fast_sync_response(self, obj, network_id, sender_id):
@@ -562,9 +565,7 @@ class Validator(object):
             # Make a copy of self.transaction_queue because make_head_candidate modifies it.
             txqueue = copy.deepcopy(self.txqueue)
             blk, _ = make_head_candidate(self.chain, txqueue, coinbase=privtoaddr(self.key))
-            temp_txqueue_conut = len(self.txqueue.txs)
-            self.txqueue = txqueue.diff(blk.transactions)
-            self.print_info('[txqueue size] before: {}, after: {}.'.format(temp_txqueue_conut, len(self.txqueue.txs)))
+            self.txqueue = txqueue
 
             # option 1: call mine()
             # blk = Miner(blk).mine(rounds=100, start_nonce=0)
@@ -594,13 +595,17 @@ class Validator(object):
         self.check_collation(blk)
         self.update_main_head()
 
-        self.received_objects[blk.hash] = True
-        self.network.broadcast(self, blk)
-        self.mining_block = None
+        temp_txqueue_conut = len(self.txqueue.txs)
+        self.txqueue = self.txqueue.diff(blk.transactions)
+        self.print_info('[txqueue size] before: {}, after: {}.'.format(temp_txqueue_conut, len(self.txqueue.txs)))
 
         global global_block_counter
         global_block_counter += 1
         self.print_info('Made block %d (%s) with timestamp %d, tx count: %d' % (blk.header.number, encode_hex(blk.header.hash), blk.timestamp, blk.transaction_count))
+
+        self.received_objects[blk.hash] = True
+        self.format_broadcast(1, blk, content=None)
+        self.mining_block = None
 
     def tick_shard(self, shard_id):
         if not self.is_SERENITY(about_to=True):
@@ -621,8 +626,8 @@ class Validator(object):
 
         self.shard_data[shard_id].period_head = expected_period_number
         self.shard_data[shard_id].used_parents[shard.head_hash] = True
-        self.print_info('is the current collator of shard {}, head block number: {}'.format(
-            shard_id, self.chain.head.number, self.chain.state.block_number))
+        self.print_info('is the current collator of shard {}'.format(
+            shard_id, self.chain.head.number))
 
         if random.random() > p.PROB_CREATE_BLOCK_SUCCESS:
             self.print_info(
@@ -660,7 +665,8 @@ class Validator(object):
             self.chain.update_head_collation_of_block)
 
         self.received_objects[collation.hash] = True
-        self.network.broadcast(self, collation, network_id=to_network_id(shard_id))
+        # self.network.broadcast(self, collation, network_id=to_network_id(shard_id))
+        self.format_broadcast(to_network_id(shard_id), collation, content=None)
         self.shard_data[shard_id].txqueue = TransactionQueue()
 
         # Add header
@@ -760,7 +766,7 @@ class Validator(object):
 
         tx = call_withdraw(self.chain.state, self.key, 0, index, sign(WITHDRAW_HASH, self.key), gasprice=gasprice)
         self.txqueue.add_transaction(tx, force=True)
-        self.network.broadcast(self, tx)
+        self.format_broadcast(1, tx, content=None)
 
         self.print_info('Withdrawing!')
 
@@ -781,7 +787,7 @@ class Validator(object):
 
         self.head_nonce += 1
 
-        self.network.broadcast(self, tx)
+        self.format_broadcast(1, tx, content=None)
         self.print_info('Adding header!')
 
         global global_tx_to_collation
@@ -926,14 +932,14 @@ class Validator(object):
         assert success
 
         self.shard_data[shard_id].txqueue.add_transaction(tx)
-        self.network.broadcast(self, tx, network_id=to_network_id(shard_id))
+        self.format_broadcast(to_network_id(shard_id), tx, content=None)
 
     def request_collations(self, shard_id, collation_hashes):
         """ Broadcast GetCollationsRequest
         """
         req = GetCollationsRequest(self.local_timestamp, collation_hashes)
-        self.format_broadcast(to_network_id(
-            shard_id), req,
+        self.format_broadcast(
+            to_network_id(shard_id), req,
             content=([encode_hex(h) for h in collation_hashes]))
 
     def request_fast_sync(self, shard_id, peer_id):
