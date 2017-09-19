@@ -57,29 +57,7 @@ def test_simulation():
     start_time = time.time()
     print('start headblock.number = {}, state.number = {}'.format(validators[0].chain.head.number, validators[0].chain.state.block_number))
 
-    def print_result():
-        print('------ [Simulation End] ------')
-        print('====== Parameters ======')
-        print('------ Measuration Parameters ------')
-        print('Total ticks: {}'.format(p.TOTAL_TICKS))
-        print('Simulation precision: {}'.format(p.PRECISION))
-        print('------ System Parameters ------')
-        print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
-        print('Shard count: {}'.format(p.SHARD_COUNT))
-        print('Peroid length: {}'.format(p.PERIOD_LENGTH))
-        print('Shuffling cycle length: {}'.format(p.SHUFFLING_CYCLE_LENGTH))
-        print('SERENITY_FORK_BLKNUM: {}'.format(p.SERENITY_FORK_BLKNUM))
-        print('------ Network Parameters ------')
-        print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
-        print('Network reliability: {}'.format(p.RELIABILITY))
-        print('Number of peers: {}'.format(p.NUM_PEERS))
-        print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
-        print('------ Validator Parameters ------')
-        print('Validator clock offset: {}'.format(p.TIME_OFFSET))
-        print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
-        print('Targe block time: {} sec'.format(p.TARGET_BLOCK_TIME))
-        print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
-        print('------ Result ------')
+    def print_status():
         block_num_list = [v.chain.head.header.number if v.chain.head else None for v in validators]
         print('Validator block heads:', block_num_list)
         print('Total blocks created:', validator.global_block_counter)
@@ -104,6 +82,31 @@ def test_simulation():
             print('  [shard {}]'.format(shard_id))
             for cycle in validator.global_peer_list[shard_id]:
                 print('        cycle ', cycle, ': ', sorted([v.id for v in validator.global_peer_list[shard_id][cycle]]))
+
+    def print_result():
+        print('------ [Simulation End] ------')
+        print('====== Parameters ======')
+        print('------ Measuration Parameters ------')
+        print('Total ticks: {}'.format(p.TOTAL_TICKS))
+        print('Simulation precision: {}'.format(p.PRECISION))
+        print('------ System Parameters ------')
+        print('Total validators num: {}'.format(p.VALIDATOR_COUNT))
+        print('Shard count: {}'.format(p.SHARD_COUNT))
+        print('Peroid length: {}'.format(p.PERIOD_LENGTH))
+        print('Shuffling cycle length: {}'.format(p.SHUFFLING_CYCLE_LENGTH))
+        print('SERENITY_FORK_BLKNUM: {}'.format(p.SERENITY_FORK_BLKNUM))
+        print('------ Network Parameters ------')
+        print('Network latency: {} sec'.format(p.LATENCY * p.PRECISION))
+        print('Network reliability: {}'.format(p.RELIABILITY))
+        print('Number of peers: {}'.format(p.NUM_PEERS))
+        print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
+        print('------ Validator Parameters ------')
+        print('Validator clock offset: {}'.format(p.TIME_OFFSET))
+        print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
+        print('Targe block time: {} sec'.format(p.TARGET_BLOCK_TIME))
+        print('Mean mining time: {} sec'.format(p.MEAN_MINING_TIME))
+        print('------ Result ------')
+        print_status()
         print("--- %s seconds ---" % (time.time() - start_time))
 
     try:
@@ -114,8 +117,7 @@ def test_simulation():
             n.tick()
             if i % 100 == 0:
                 print('%d ticks passed' % i)
-                print('Validator block heads:', [v.chain.head.header.number if v.chain.head else None for v in validators])
-                print('Total blocks created:', validator.global_block_counter)
+                print_status()
 
             # if i == 1000:
             #     print('Withdrawing a few validators')
