@@ -6,18 +6,23 @@ from ethereum.genesis_helpers import mk_basic_state
 from ethereum.config import Env
 from ethereum.messages import apply_transaction
 from ethereum.consensus_strategy import get_consensus_strategy
-from ethereum.utils import privtoaddr, big_endian_to_int
+from ethereum.utils import (
+    privtoaddr,
+    big_endian_to_int,
+)
 from ethereum.common import mk_block_from_prevstate
 
 from sharding.config import sharding_config
 from sharding.validator_manager_utils import (
-    get_valmgr_ct, get_valmgr_addr,
-    mk_initiating_contracts, call_deposit,
+    DEPOSIT_SIZE,
     create_contract_tx,
     mk_validation_code,
-    DEPOSIT_SIZE,
-    call_msg
-    )
+    mk_initiating_contracts,
+    call_valmgr,
+    call_deposit,
+    get_valmgr_ct,
+    get_valmgr_addr,
+)
 
 
 def get_valcode_addr(state, privkey):
@@ -56,30 +61,19 @@ def make_sharding_genesis(keys, alloc, timestamp=0):
     # 3. Deposit
 
     # validators: (privkey)
-    validation_code_addr_list = {}
+    validator_data = {}
     for privkey in keys:
-        validation_code_addr_list[privkey] = validator_inject(state, privkey)
+        validator_data[privkey] = validator_inject(state, privkey)
 
-    assert len(keys) == big_endian_to_int(call_msg(
-        state,
-        get_valmgr_ct(),
-        'get_num_validators',
+    assert len(keys) == call_valmgr(
+        state, 'get_num_validators',
         [],
-        b'\xff' * 20,
-        get_valmgr_addr()
-    ))
+        sender_addr=b'\xff' * 20
+    )
 
-    # Start the first epoch
-    # casper_start_epoch(state)
-
-    # assert call_casper(state, 'getEpoch', []) == 0
-    # assert call_casper(state, 'getTotalDeposits', []) == sum([d for a,d,r,a in validators])
-    # state.set_storage_data(utils.normalize_address(state.config['METROPOLIS_BLOCKHASH_STORE']),
-    #                        state.block_number % state.config['METROPOLIS_WRAPAROUND'],
-    #                        header.hash)
     state.commit()
 
-    return state, validation_code_addr_list
+    return state, validator_data
 
 
 def sharding_contract_bootstrap(state, sender_privkey, nonce=0):
@@ -92,9 +86,10 @@ def sharding_contract_bootstrap(state, sender_privkey, nonce=0):
 def validator_inject(state, privkey):
     validation_code_addr = get_valcode_addr(state, privkey)
     tx = call_deposit(state, privkey, DEPOSIT_SIZE, validation_code_addr, privtoaddr(privkey))
-    success, _ = apply_transaction(state, tx)
+    success, output = apply_transaction(state, tx)
+    index = big_endian_to_int(output)
     assert success
-    return validation_code_addr
+    return (validation_code_addr, index)
 
 
 def prepare_next_state(chain):

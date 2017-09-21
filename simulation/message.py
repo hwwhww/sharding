@@ -1,10 +1,24 @@
 import rlp
-from rlp.sedes import binary, CountableList
-from ethereum.utils import (
-    sha3, hash32, int256, encode_hex)
-from ethereum.block import BlockHeader, Block
+from rlp.sedes import (
+    binary,
+    CountableList,
+)
 
-from sharding.collation import Collation, CollationHeader
+from ethereum.utils import (
+    sha3,
+    hash32,
+    int256,
+    encode_hex,
+)
+from ethereum.block import (
+    BlockHeader,
+    Block,
+)
+
+from sharding.collation import (
+    Collation,
+    CollationHeader,
+)
 
 
 class ChildRequest(rlp.Serializable):

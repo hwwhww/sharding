@@ -35,13 +35,13 @@ def test_simulation():
     # 1.1 Alloc balance
     # 1.2 generate valcode_addr
     # 1.3 deposit
-    s, validation_code_addr_list = make_sharding_genesis(
+    s, validator_data = make_sharding_genesis(
         keys,
         alloc={privtoaddr(k): {'balance': 10000 * utils.denoms.ether} for k in keys},
         timestamp=2)
     g = s.to_snapshot()
     print('Genesis state created')
-    validators = [Validator(g, k, n, env=Env(config=sharding_config), time_offset=p.TIME_OFFSET, validation_code_addr=validation_code_addr_list[k]) for k in keys]
+    validators = [Validator(g, k, n, env=Env(config=sharding_config), time_offset=p.TIME_OFFSET, validator_data=validator_data[k]) for k in keys]
 
     # 2. Set NetworkSimulator n
     n.agents = validators

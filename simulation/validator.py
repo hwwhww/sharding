@@ -7,8 +7,13 @@ import rlp
 
 from ethereum import utils
 from ethereum.utils import (
-    sha3, privtoaddr,
-    big_endian_to_int, encode_hex, to_string, int_to_addr)
+    sha3,
+    privtoaddr,
+    big_endian_to_int,
+    encode_hex,
+    to_string,
+    int_to_addr,
+)
 from ethereum.transaction_queue import TransactionQueue
 from ethereum.meta import make_head_candidate
 from ethereum.block import Block
@@ -22,29 +27,45 @@ from ethereum.config import Env
 
 from sharding.collation import Collation
 from sharding.validator_manager_utils import (
+    WITHDRAW_HASH,
+    ADD_HEADER_TOPIC,
     mk_validation_code,
-    call_sample, call_withdraw, call_deposit,
+    sign,
+    call_valmgr,
+    call_tx,
+    call_withdraw,
+    call_deposit,
     call_tx_add_header,
     get_shard_list,
-    get_valmgr_ct, get_valmgr_addr,
-    call_msg, call_tx,
-    WITHDRAW_HASH, ADD_HEADER_TOPIC, sign)
+    get_valmgr_ct,
+    get_valmgr_addr,
+)
 from sharding.main_chain import MainChain as Chain
-from sharding.collator import create_collation, verify_collation_header
+from sharding.collator import (
+    create_collation,
+    verify_collation_header,
+)
 from sharding.collation import CollationHeader
 from sharding.shard_chain import ShardChain
 
 # from sharding_utils import RandaoManager
 from sim_config import Config as p
-from distributions import transform, exponential_distribution
-from sharding_utils import (prepare_next_state, to_network_id, to_shard_id)
+from distributions import (
+    transform,
+    exponential_distribution,
+)
+from sharding_utils import (
+    prepare_next_state,
+    to_network_id,
+    to_shard_id,
+)
 from message import (
     GetBlockHeadersRequest, GetBlockHeadersResponse,
     GetBlocksRequest, GetBlocksResponse,
     GetCollationHeadersRequest, GetCollationHeadersResponse,
     GetCollationsRequest, GetCollationsResponse,
     ShardSyncRequest, ShardSyncResponse,
-    FastSyncRequest, FastSyncResponse
+    FastSyncRequest, FastSyncResponse,
 )
 
 BLOCK_BEHIND_THRESHOLD = 3
@@ -98,7 +119,7 @@ class ShardData(object):
 
 
 class Validator(object):
-    def __init__(self, genesis, key, network, env, time_offset=5, validation_code_addr=None):
+    def __init__(self, genesis, key, network, env, time_offset=5, validator_data=None):
         # Create a chain object
         self.chain = Chain(genesis=genesis, env=env)
         # Create a transaction queue
@@ -111,7 +132,8 @@ class Validator(object):
         self.address = privtoaddr(key)
         # Code that verifies signatures from this validator
         self.validation_code = mk_validation_code(privtoaddr(key))
-        self.validation_code_addr = validation_code_addr
+        self.validation_code_addr = validator_data[0]
+        self.index = validator_data[1]
         # Give this validator a unique ID
         self.id = len(ids)
         ids.append(self.id)
@@ -222,9 +244,9 @@ class Validator(object):
             self.on_receive_fast_sync_response(obj, network_id, sender_id)
 
         self.received_objects[obj.hash] = True
-        if not p.MINIMIZE_CHECKING:
-            for x in self.chain.get_chain():
-                assert x.hash in self.received_objects
+        # if not p.MINIMIZE_CHECKING:
+        #     for x in self.chain.get_chain():
+        #         assert x.hash in self.received_objects
 
     @format_receiving
     def on_receive_block(self, obj, network_id, sender_id):
@@ -279,11 +301,7 @@ class Validator(object):
             return
 
         period_start_prevblock = self.chain.get_block(obj.header.period_start_prevhash)
-        collation_success = self.chain.shards[shard_id].add_collation(
-            obj,
-            period_start_prevblock,
-            self.chain.handle_ignored_collation,
-            self.chain.update_head_collation_of_block)
+        collation_success = self.chain.shards[shard_id].add_collation(obj, period_start_prevblock)
         self.print_info('collation_success: {}'.format(collation_success))
         # self.network.broadcast(self, obj, network_id)
         self.format_broadcast(network_id, obj, content=None)
@@ -445,10 +463,7 @@ class Validator(object):
 
         for c in obj.collations:
             period_start_prevblock = self.chain.get_block(c.period_start_prevhash)
-            shard.add_collation(
-                c, period_start_prevblock=period_start_prevblock,
-                handle_ignored_collation=self.chain.handle_ignored_collation,
-                update_head_collation_of_block=self.chain.update_head_collation_of_block)
+            shard.add_collation(c, period_start_prevblock)
         if obj.collations:
             shard.head_hash = obj.collations[-1].hash
         self.print_info('Updated shard {} from peer'.format(shard_id))
@@ -658,11 +673,7 @@ class Validator(object):
         global_collation_counter[shard_id] += 1
 
         period_start_prevblock = self.chain.get_block(collation.header.period_start_prevhash)
-        assert shard.add_collation(
-            collation,
-            period_start_prevblock,
-            self.chain.handle_ignored_collation,
-            self.chain.update_head_collation_of_block)
+        assert shard.add_collation(collation, period_start_prevblock)
 
         self.received_objects[collation.hash] = True
         # self.network.broadcast(self, collation, network_id=to_network_id(shard_id))
@@ -755,16 +766,7 @@ class Validator(object):
     def withdraw(self, gasprice=1):
         """ Create and send withdrawal transaction
         """
-        index = call_msg(
-            self.chain.state,
-            get_valmgr_ct(),
-            'get_index',
-            [self.validation_code_addr],
-            b'\xff' * 20,
-            get_valmgr_addr()
-        )
-
-        tx = call_withdraw(self.chain.state, self.key, 0, index, sign(WITHDRAW_HASH, self.key), gasprice=gasprice)
+        tx = call_withdraw(self.chain.state, self.key, 0, self.index, sign(WITHDRAW_HASH, self.key), gasprice=gasprice)
         self.txqueue.add_transaction(tx, force=True)
         self.format_broadcast(1, tx, content=None)
 
@@ -777,7 +779,7 @@ class Validator(object):
 
         tx = call_tx_add_header(
             temp_state, self.key, 0,
-            rlp.encode(CollationHeader.serialize(collation.header)), gasprice=gasprice, nonce=self.head_nonce)
+            rlp.encode(CollationHeader.serialize(collation.header)), gasprice=gasprice)
         self.txqueue.add_transaction(tx, force=True)
 
         if not p.MINIMIZE_CHECKING:
@@ -793,15 +795,6 @@ class Validator(object):
         global global_tx_to_collation
         global_tx_to_collation[tx.hash] = str(self.chain.head.header.number) + '_' + encode_hex(collation.header.hash)
 
-    def get_period_start_prevhash_from_contract(self, expected_period_number):
-        """ Get period_start_prevhash via calling contract
-        """
-        temp_state = prepare_next_state(self.chain)
-        return call_msg(
-            temp_state, get_valmgr_ct(), 'get_period_start_prevhash', [expected_period_number],
-            b'\xff' * 20, get_valmgr_addr()
-        )
-
     def get_shard_id_list(self):
         """ Get the list of shard_id that the validator may be selected in this cycle
         """
@@ -812,18 +805,6 @@ class Validator(object):
             if value:
                 shard_id_list.add(shard_id)
         return shard_id_list
-
-    def call_msg(self, function, args=None, sender=b'\xff' * 20):
-        """ Make a message call
-        """
-        return call_msg(
-            self.chain.state,
-            get_valmgr_ct(),
-            function,
-            [] if args is None else args,
-            sender,
-            get_valmgr_addr()
-        )
 
     def new_shard(self, shard_id):
         """Add new shard and allocate ShardData
@@ -878,8 +859,7 @@ class Validator(object):
         """ Check if the validator is the collator of this shard at this moment
         """
         temp_state = prepare_next_state(self.chain)
-        # self.print_info('get_num_validators: {}'.format(big_endian_to_int(self.call_msg('get_num_validators'))))
-        sampled_addr = hex(big_endian_to_int(call_sample(temp_state, shard_id)))
+        sampled_addr = hex(int(call_valmgr(temp_state, 'sample', [shard_id]), 16))
         valcode_code_addr = hex(big_endian_to_int(self.validation_code_addr))
         self.print_info('sampled_addr:{}, valcode_code_addr: {} '.format(sampled_addr, valcode_code_addr))
 

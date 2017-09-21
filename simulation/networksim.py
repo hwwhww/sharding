@@ -1,4 +1,7 @@
-from distributions import transform, normal_distribution
+from distributions import (
+    transform,
+    normal_distribution,
+)
 import random
 
 
@@ -20,7 +23,8 @@ class NetworkSimulator():
         if peer_list is None:
             peer_list = self.agents
         p = []
-        assert len(peer_list) > 1
+        if len(peer_list) == 1:
+            return
         while len(p) <= num_peers // 2:
             p.append(random.choice(peer_list))
             if p[-1] == agent and (
