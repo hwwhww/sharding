@@ -1,5 +1,6 @@
 import time
 import numpy as np
+import random
 
 from ethereum.config import Env
 from ethereum import utils
@@ -68,20 +69,56 @@ def test_simulation():
         min_block_num = np.min(block_num_list)
         print('Min Block Number: {}'.format(min_block_num))
         print('Min Block Hash', [encode_hex(v.chain.get_block_by_number(min_block_num).header.hash[:4]) if v.chain.head else None for v in validators])
+
+        checking_v = validators[0]
+        print('Checking state of [V 0]: head_nonce: {}'.format(checking_v.head_nonce))
+        for v in validators:
+            print('    [V {}] nonce: {}, balance: {}'.format(
+                v.id,
+                checking_v.chain.state.get_nonce(v.address),
+                checking_v.chain.state.get_balance(v.address)
+            ))
+
         print('------ Validator collation heads ------')
         for shard_id in range(p.SHARD_COUNT):
             print('    [shard {}] {}'.format(
                 shard_id,
-                [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head) if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None for v in validators]
+                [v.chain.shards[shard_id].get_score(v.chain.shards[shard_id].head)
+                    if shard_id in v.chain.shard_id_list and v.chain.shards[shard_id].head else None
+                    for v in validators]
             ))
         print('Total collations created: ')
         for shard_id in sorted(validator.global_peer_list):
             print('    [shard {}]   {}'.format(shard_id, validator.global_collation_counter[shard_id]))
         print('Peers of each shuffling cycle and shard:')
-        for shard_id in validator.global_peer_list:
+        transaction_count = 0
+        for shard_id in sorted(validator.global_peer_list):
             print('  [shard {}]'.format(shard_id))
-            for cycle in validator.global_peer_list[shard_id]:
+            last_cycle = None
+            for cycle in sorted(validator.global_peer_list[shard_id]):
                 print('        cycle ', cycle, ': ', sorted([v.id for v in validator.global_peer_list[shard_id][cycle]]))
+                last_cycle = cycle
+            checking_v = random.choice(validator.global_peer_list[shard_id][last_cycle])
+            # print('[V {}] head_nonce: {}, state:'.format(
+            #     checking_v.id,
+            #     checking_v.shard_data[shard_id].head_nonce)
+            # )
+            for v in validators:
+                for i in range(10):
+                    acct = validator.accounts[v.id * 10 + i]
+                    transaction_count += checking_v.chain.shards[shard_id].state.get_nonce(acct)
+                # print('    [V {}] nonce: {}, balance: {}'.format(
+                #     v.id,
+                #     checking_v.chain.shards[shard_id].state.get_nonce(v.address),
+                #     checking_v.chain.shards[shard_id].state.get_balance(v.address)
+                # ))
+        print('Total shard chain txs count: {}'.format(transaction_count))
+        print('Total shards TPS: {}'.format(
+            transaction_count / ((p.TOTAL_TICKS - 500) * p.PRECISION)
+        ))
+        print('Average shard TPS: {}'.format(
+            transaction_count / ((p.TOTAL_TICKS - 500) * p.PRECISION * p.SHARD_COUNT)
+        ))
 
     def print_result():
         print('------ [Simulation End] ------')
@@ -100,6 +137,8 @@ def test_simulation():
         print('Network reliability: {}'.format(p.RELIABILITY))
         print('Number of peers: {}'.format(p.NUM_PEERS))
         print('Number of shard peers: {}'.format(p.SHARD_NUM_PEERS))
+        print('Target total shards TPS: {}'.format(p.TARGET_TOTAL_TPS))
+        print('Mean tx arrival time: {}'.format(p.MEAN_TX_ARRIVAL_TIME))
         print('------ Validator Parameters ------')
         print('Validator clock offset: {}'.format(p.TIME_OFFSET))
         print('Probability of validator failure to make a block: {}'.format(p.PROB_CREATE_BLOCK_SUCCESS))
@@ -118,7 +157,9 @@ def test_simulation():
             if i % 100 == 0:
                 print('%d ticks passed' % i)
                 print_status()
-
+            if i == 200:
+                for v in validators:
+                    v.tx_to_shard(shard_id=0)
             # if i == 1000:
             #     print('Withdrawing a few validators')
             #     for v in validators[:5]:

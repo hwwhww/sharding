@@ -20,6 +20,8 @@ class Config(object):
     RELIABILITY = 0.9
     NUM_PEERS = 5
     SHARD_NUM_PEERS = 5
+    TARGET_TOTAL_TPS = 2
+    MEAN_TX_ARRIVAL_TIME = ((1 / TARGET_TOTAL_TPS) * PRECISION) * VALIDATOR_COUNT
 
     # Validator Parameters
     TIME_OFFSET = 1

@@ -20,8 +20,6 @@ from sharding.validator_manager_utils import (
     mk_initiating_contracts,
     call_valmgr,
     call_deposit,
-    get_valmgr_ct,
-    get_valmgr_addr,
 )
 
 
