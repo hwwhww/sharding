@@ -21,6 +21,7 @@ from progress import progress
 config_string = ':info,eth.vm.log:trace'
 configure_logging(config_string=config_string)
 
+TIME_TX_TO_SHARD = 1000
 
 # if __name__ == "__main__":
 def test_simulation():
@@ -99,25 +100,17 @@ def test_simulation():
                 print('        cycle ', cycle, ': ', sorted([v.id for v in validator.global_peer_list[shard_id][cycle]]))
                 last_cycle = cycle
             checking_v = random.choice(validator.global_peer_list[shard_id][last_cycle])
-            # print('[V {}] head_nonce: {}, state:'.format(
-            #     checking_v.id,
-            #     checking_v.shard_data[shard_id].head_nonce)
-            # )
+            print('        checking [V {}] state'.format(checking_v.id))
             for v in validators:
-                for i in range(10):
-                    acct = validator.accounts[v.id * 10 + i]
+                for i in range(110):
+                    acct = validator.accounts[i]
                     transaction_count += checking_v.chain.shards[shard_id].state.get_nonce(acct)
-                # print('    [V {}] nonce: {}, balance: {}'.format(
-                #     v.id,
-                #     checking_v.chain.shards[shard_id].state.get_nonce(v.address),
-                #     checking_v.chain.shards[shard_id].state.get_balance(v.address)
-                # ))
         print('Total shard chain txs count: {}'.format(transaction_count))
         print('Total shards TPS: {}'.format(
-            transaction_count / ((p.TOTAL_TICKS - 500) * p.PRECISION)
+            transaction_count / ((p.TOTAL_TICKS - TIME_TX_TO_SHARD) * p.PRECISION)
         ))
         print('Average shard TPS: {}'.format(
-            transaction_count / ((p.TOTAL_TICKS - 500) * p.PRECISION * p.SHARD_COUNT)
+            transaction_count / ((p.TOTAL_TICKS - TIME_TX_TO_SHARD) * p.PRECISION * p.SHARD_COUNT)
         ))
 
     def print_result():
@@ -157,9 +150,11 @@ def test_simulation():
             if i % 100 == 0:
                 print('%d ticks passed' % i)
                 print_status()
-            if i == 200:
+
+            if i == TIME_TX_TO_SHARD:
                 for v in validators:
-                    v.tx_to_shard(shard_id=0)
+                    for shard_id in range(p.SHARD_COUNT):
+                        v.tx_to_shard(shard_id)
             # if i == 1000:
             #     print('Withdrawing a few validators')
             #     for v in validators[:5]:

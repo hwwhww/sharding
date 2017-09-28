@@ -1,7 +1,7 @@
 class Config(object):
     # Measuration Parameters
-    TOTAL_TICKS = 30000
-    PRECISION = 0.02
+    TOTAL_TICKS = 3000
+    PRECISION = 0.5
     INITIAL_TIMESTAMP = 1
 
     # Acceleration Parameters
@@ -9,10 +9,11 @@ class Config(object):
 
     # System Parameters
     VALIDATOR_COUNT = 10            # Main chain PoW nodes
-    SHARD_COUNT = 1                 # NOTE: Need to modify contract too
+    NUM_WALLET = 10                 # Number of wallets of one validator(not includes coinbase)
+    SHARD_COUNT = 2                 # NOTE: Need to modify contract too
     # NUM_VALIDATOR_PER_CYCLE = 10  # NOTE: Only setting in contract
     PERIOD_LENGTH = 5               # NOTE: Need to modify contract too
-    SHUFFLING_CYCLE_LENGTH = 20     # NOTE: Need to modify contract too
+    SHUFFLING_CYCLE_LENGTH = 25     # NOTE: Need to modify contract too
     SERENITY_FORK_BLKNUM = 0
 
     # Network Parameters
@@ -20,7 +21,7 @@ class Config(object):
     RELIABILITY = 0.9
     NUM_PEERS = 5
     SHARD_NUM_PEERS = 5
-    TARGET_TOTAL_TPS = 2
+    TARGET_TOTAL_TPS = 1
     MEAN_TX_ARRIVAL_TIME = ((1 / TARGET_TOTAL_TPS) * PRECISION) * VALIDATOR_COUNT
 
     # Validator Parameters

@@ -24,11 +24,13 @@ from ethereum.genesis_helpers import mk_basic_state
 from ethereum.config import Env
 
 from sharding.collation import Collation
+from sharding.contract_utils import (
+    sign,
+)
 from sharding.validator_manager_utils import (
     WITHDRAW_HASH,
     ADD_HEADER_TOPIC,
     mk_validation_code,
-    sign,
     call_valmgr,
     call_withdraw,
     call_deposit,
@@ -44,6 +46,7 @@ from sharding.collator import (
 from sharding.collation import CollationHeader
 from sharding.shard_chain import ShardChain
 from sharding.receipt_consuming_tx_utils import apply_shard_transaction
+from sharding.tests.test_receipt_consuming_tx_utils import mk_testing_receipt_consuming_tx
 from sharding.used_receipt_store_utils import mk_initiating_txs_for_urs
 
 # from sharding_utils import RandaoManager
@@ -80,6 +83,7 @@ GASPRICE = 1
 global_block_counter = 0
 global_collation_counter = defaultdict(lambda: 0)
 add_header_topic = utils.big_endian_to_int(ADD_HEADER_TOPIC)
+tx_to_shard_topic = utils.big_endian_to_int(utils.sha3("tx_to_shard()"))
 
 global_tx_to_collation = {}
 global_peer_list = defaultdict(lambda: defaultdict(list))
@@ -88,23 +92,24 @@ global_peer_list = defaultdict(lambda: defaultdict(list))
 accounts = []
 keys = []
 
-for account_number in range(100):
+num_account = p.VALIDATOR_COUNT + p.VALIDATOR_COUNT * p.NUM_WALLET
+for account_number in range(num_account):
     keys.append(sha3(to_string(account_number)))
     accounts.append(privtoaddr(keys[-1]))
 
 base_alloc = {}
 minimal_alloc = {}
-g_head_nonce = defaultdict(lambda: defaultdict(dict))
-for a in accounts:
-    base_alloc[a] = {'balance': 1000 * utils.denoms.ether}
-    for shard_id in range(p.SHARD_COUNT):
-        g_head_nonce[shard_id][a] = 0
-
+for i, a in enumerate(accounts):
+    # base_alloc[a] = {'balance': 1000000 * utils.denoms.ether}
+    if i < p.VALIDATOR_COUNT:
+        base_alloc[a] = {'balance': 1000000 * utils.denoms.ether}
+    else:
+        base_alloc[a] = {'balance': 0}
 ids = []
 
 
 class ShardData(object):
-    def __init__(self, shard_id, head_hash, tick_shard_state, head_nonce):
+    def __init__(self, shard_id, head_hash, tick_shard_state):
         # id of this shard
         self.shard_id = shard_id
         # Parents that this validator has already built a block on
@@ -115,7 +120,14 @@ class ShardData(object):
         self.last_checked_period = -1
         self.missing_collations = {}
         self.tick_shard_state = tick_shard_state
-        self.head_nonce = head_nonce
+        # self.head_nonce = head_nonce
+        self.head_nonce_dict = {}
+        self.receipt_id = {}
+
+        global accounts
+        for a in accounts:
+            self.head_nonce_dict[a] = 0
+            self.receipt_id[a] = -1
 
 
 def format_receiving(f):
@@ -185,10 +197,16 @@ class Validator(object):
         self.tx_distribution = transform(exponential_distribution(p.MEAN_TX_ARRIVAL_TIME), lambda x: max(x, 0))
         # The timestamp of last sending tx
         self.tx_timestamp = self.local_timestamp
+        # tx_to_shard logs
+        self.tx_to_shard_logs = []
 
     @property
     def local_timestamp(self):
         return int(self.network.time * p.PRECISION) + self.time_offset
+
+    @property
+    def bytes32_wallet_addr_list(self):
+        return get_bytes32_wallet_addr_list(self.id)
 
     def is_watching(self, shard_id):
         return shard_id in self.shard_id_list
@@ -262,6 +280,7 @@ class Validator(object):
         # Set filter add_header logs
         if len(self.chain.state.log_listeners) == 0:
             self.chain.append_log_listener()
+            self.chain.state.log_listeners.append(self.tx_to_shard_event_watcher)
 
         block_success, missing_collations = self.chain.add_block(obj)
         self.print_info('block_success: {}'.format(block_success))
@@ -290,6 +309,9 @@ class Validator(object):
             for tx in self.mining_block.transactions:
                 self.txqueue.add_transaction(tx)
             self.mining_block = None
+
+            # Check tx_to_shard log
+            self.handle_tx_to_shard()
 
         # Check if the validator fell behind
         if obj.header.number > self.chain.head.number + BLOCK_BEHIND_THRESHOLD:
@@ -529,7 +551,7 @@ class Validator(object):
 
         for shard_id in self.shard_id_list:
             self.tick_shard(shard_id)
-            if self.network.time > 500:
+            if self.network.time > 1400:
                 self.tick_tx(shard_id)
 
             if self.network.time % 100 == 0:
@@ -541,6 +563,8 @@ class Validator(object):
 
         # Check shuffling cycle
         current_shuffling_cycle = self.chain.head.number // p.SHUFFLING_CYCLE_LENGTH
+        if current_shuffling_cycle == 0:
+            return
         if (self.is_SERENITY(next_block_fork=True) or self.chain.head.number % p.SHUFFLING_CYCLE_LENGTH == 0) and \
                 self.shuffling_cycle < current_shuffling_cycle:
             self.shuffling_cycle = current_shuffling_cycle
@@ -558,10 +582,6 @@ class Validator(object):
                     self.chain.shards[shard_id].is_syncing = False
 
     def tick_main(self, init_cycle=False):
-        if self.is_SERENITY(about_to=True):
-            for k in self.shard_id_list:
-                if self.chain.shards[k].is_syncing:
-                    return
         self.tick_broadcast_block()
         self.tick_create_block()
 
@@ -616,6 +636,7 @@ class Validator(object):
         # Set filter add_header logs
         if len(self.chain.state.log_listeners) == 0:
             self.chain.append_log_listener()
+            self.chain.state.log_listeners.append(self.tx_to_shard_event_watcher)
 
         success, _ = self.chain.add_block(blk)
         if not p.MINIMIZE_CHECKING:
@@ -630,6 +651,9 @@ class Validator(object):
         self.received_objects[blk.hash] = True
         self.format_broadcast(1, blk, content=None)
         self.mining_block = None
+
+        # Check tx_to_shard log
+        self.handle_tx_to_shard()
 
     def tick_shard(self, shard_id):
         if not self.is_SERENITY(about_to=True):
@@ -704,9 +728,9 @@ class Validator(object):
                 len(self.shard_id_list):
             interval = self.tx_distribution()
             self.tx_timestamp = self.local_timestamp + interval
-            current_nonce = self.chain.shards[shard_id].state.get_nonce(self.address)
-            if current_nonce > self.shard_data[shard_id].head_nonce - TXQUEUE_DEPTH:
-                self.generate_shard_tx(shard_id)
+            # current_nonce = self.chain.shards[shard_id].state.get_nonce(self.address)
+            # if current_nonce > self.shard_data[shard_id].head_nonce - TXQUEUE_DEPTH:
+            self.generate_shard_tx(shard_id)
 
     def connect(self, shard_id):
         """ Connect to new shard peers
@@ -822,21 +846,26 @@ class Validator(object):
         global_tx_to_collation[tx.hash] = str(self.chain.head.header.number) + '_' + encode_hex(collation.header.hash)
 
     def tx_to_shard(self, shard_id):
-        tx = call_tx_to_shard(
-            self.chain.state,
-            self.key,
-            0,
-            self.address,
-            shard_id,
-            100000,
-            1,
-            b'',
-            nonce=self.head_nonce
-        )
-        self.txqueue.add_transaction(tx, force=True)
-        self.format_broadcast(1, tx, content=None)
-        self.head_nonce += 1
-        self.print_info('tx_to_shard!')
+        self.set_tick_chain_state()
+        temp_state = self.tick_chain_state
+        start = (p.VALIDATOR_COUNT - 1) + self.id * p.NUM_WALLET
+        end = start + p.NUM_WALLET
+        for index in range(start, end):
+            tx = call_tx_to_shard(
+                temp_state,
+                self.key,
+                100 * utils.denoms.ether,
+                accounts[index],
+                shard_id,
+                260000,
+                1,
+                b'',
+                nonce=self.head_nonce
+            )
+            self.txqueue.add_transaction(tx, force=True)
+            self.format_broadcast(1, tx, content=None)
+            self.head_nonce += 1
+            self.print_info('tx_to_shard!')
 
     def get_shard_id_list(self):
         """ Get the list of shard_id that the validator may be selected in this cycle
@@ -862,8 +891,7 @@ class Validator(object):
         self.shard_data[shard_id] = ShardData(
             shard_id,
             self.chain.shards[shard_id].head_hash,
-            self.chain.shards[shard_id].state.ephemeral_clone(),
-            self.chain.shards[shard_id].state.get_nonce(self.address)
+            self.chain.shards[shard_id].state.ephemeral_clone()
         )
         self.shard_id_list.add(shard_id)
 
@@ -948,24 +976,44 @@ class Validator(object):
         cs.initialize(self.tick_chain_state, temp_block)
 
     def generate_shard_tx(self, shard_id, gasprice=GASPRICE):
-        index = random.randint(0, 9)
-        index = self.id * 10 + index
+        # v0 owns v10 to v19, v1 owns v20 to v29...
+        index = (p.VALIDATOR_COUNT - 1) + self.id * p.NUM_WALLET + random.randint(0, p.NUM_WALLET - 1)
         key = keys[index]
         acct = accounts[index]
-        nonce = g_head_nonce[shard_id][acct]
-        tx = Transaction(
-            nonce,
-            gasprice,
-            STARTGAS,
-            acct,
-            0,
-            b''
-        ).sign(key)
+        nonce = self.shard_data[shard_id].head_nonce_dict[acct]
+        current_nonce = self.chain.shards[shard_id].state.get_nonce(acct)
+
+        # Don't accumulate too many txs
+        if current_nonce < nonce - TXQUEUE_DEPTH:
+            return
+
+        if self.shard_data[shard_id].receipt_id[acct] < 0:
+            return
+
+        if self.chain.shards[shard_id].state.get_balance(acct) > 0:
+            self.print_info('acct {} balance: {}'.format(encode_hex(acct), self.chain.shards[shard_id].state.get_balance(acct)))
+            tx = Transaction(
+                nonce,
+                gasprice,
+                STARTGAS,
+                acct,
+                0,
+                b''
+            ).sign(key)
+            self.shard_data[shard_id].head_nonce_dict[acct] += 1
+            self.print_info('Sending normal shard tx, nonce: {}'.format(nonce))
+        else:
+            tx = mk_testing_receipt_consuming_tx(
+                self.shard_data[shard_id].receipt_id[acct],
+                acct,
+                100 * utils.denoms.ether,
+                260000,
+                gasprice,
+            )
+            self.print_info('Sending receipt consuming tx, receipt_id: {}'.format(self.shard_data[shard_id].receipt_id[acct]))
 
         self.shard_data[shard_id].txqueue.add_transaction(tx)
         self.format_broadcast(to_network_id(shard_id), tx, content=None)
-        self.print_info('Sending tx, nonce: {}'.format(self.shard_data[shard_id].head_nonce))
-        g_head_nonce[shard_id][acct] += 1
 
     def request_collations(self, shard_id, collation_hashes):
         """ Broadcast GetCollationsRequest
@@ -1037,6 +1085,22 @@ class Validator(object):
                 self.address
             )
 
+    def tx_to_shard_event_watcher(self, log):
+        global tx_to_shard_topic
+        if log.topics[0] == tx_to_shard_topic:
+            self.tx_to_shard_logs.append(log)
+
+    def handle_tx_to_shard(self):
+        for log in self.tx_to_shard_logs:
+            shard_id = log.topics[2]
+            for index, byte32_addr in enumerate(self.bytes32_wallet_addr_list):
+                if byte32_addr == log.topics[1] and self.is_watching(shard_id):
+                    user_index = (p.VALIDATOR_COUNT - 1) + self.id * p.NUM_WALLET + index
+                    acct = accounts[user_index]
+                    self.shard_data[shard_id].receipt_id[acct] = big_endian_to_int(log.data)
+                    self.print_info('handle_tx_to_shard, receipt_id: {}'.format(self.shard_data[shard_id].receipt_id[acct]))
+        self.tx_to_shard_logs = []
+
 
 def generate_testing_shard(chain, shard_id, sender_privkey):
     shard_state = mk_basic_state(base_alloc, None, chain.env)
@@ -1062,3 +1126,13 @@ def diff_transactions(state, txqueue, address):
             outdated_txs.append(otx.tx)
     txqueue.diff(outdated_txs)
     return txqueue
+
+
+def as_bytes32_addr(addr):
+    return utils.big_endian_to_int(b'\x00' * 12 + addr)
+
+
+def get_bytes32_wallet_addr_list(id):
+    start = (p.VALIDATOR_COUNT - 1) + id * p.NUM_WALLET
+    end = start + p.NUM_WALLET
+    return [as_bytes32_addr(accounts[i]) for i in range(start, end)]

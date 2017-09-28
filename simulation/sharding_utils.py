@@ -13,14 +13,16 @@ from ethereum.utils import (
 from ethereum.common import mk_block_from_prevstate
 
 from sharding.config import sharding_config
+from sharding.contract_utils import create_contract_tx
 from sharding.validator_manager_utils import (
     DEPOSIT_SIZE,
-    create_contract_tx,
     mk_validation_code,
     mk_initiating_contracts,
     call_valmgr,
     call_deposit,
 )
+
+from sim_config import Config as p
 
 
 def get_valcode_addr(state, privkey):
@@ -60,10 +62,10 @@ def make_sharding_genesis(keys, alloc, timestamp=0):
 
     # validators: (privkey)
     validator_data = {}
-    for privkey in keys:
-        validator_data[privkey] = validator_inject(state, privkey)
+    for index in range(p.VALIDATOR_COUNT):
+        validator_data[keys[index]] = validator_inject(state, keys[index])
 
-    assert len(keys) == call_valmgr(
+    assert p.VALIDATOR_COUNT == call_valmgr(
         state, 'get_num_validators',
         [],
         sender_addr=b'\xff' * 20
