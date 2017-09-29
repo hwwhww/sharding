@@ -28,6 +28,7 @@ from sharding.contract_utils import (
     sign,
 )
 from sharding.validator_manager_utils import (
+    DEPOSIT_SIZE,
     WITHDRAW_HASH,
     ADD_HEADER_TOPIC,
     mk_validation_code,
@@ -84,6 +85,7 @@ global_block_counter = 0
 global_collation_counter = defaultdict(lambda: 0)
 add_header_topic = utils.big_endian_to_int(ADD_HEADER_TOPIC)
 tx_to_shard_topic = utils.big_endian_to_int(utils.sha3("tx_to_shard()"))
+deposit_topic = utils.big_endian_to_int(utils.sha3("deposit()"))
 
 global_tx_to_collation = {}
 global_peer_list = defaultdict(lambda: defaultdict(list))
@@ -199,6 +201,8 @@ class Validator(object):
         self.tx_timestamp = self.local_timestamp
         # tx_to_shard logs
         self.tx_to_shard_logs = []
+        # deposit logs
+        self.deposit_logs = []
 
     @property
     def local_timestamp(self):
@@ -281,6 +285,7 @@ class Validator(object):
         if len(self.chain.state.log_listeners) == 0:
             self.chain.append_log_listener()
             self.chain.state.log_listeners.append(self.tx_to_shard_event_watcher)
+            self.chain.state.log_listeners.append(self.deposit_event_watcher)
 
         block_success, missing_collations = self.chain.add_block(obj)
         self.print_info('block_success: {}'.format(block_success))
@@ -312,6 +317,7 @@ class Validator(object):
 
             # Check tx_to_shard log
             self.handle_tx_to_shard()
+            self.handle_deposit()
 
         # Check if the validator fell behind
         if obj.header.number > self.chain.head.number + BLOCK_BEHIND_THRESHOLD:
@@ -550,10 +556,10 @@ class Validator(object):
         self.set_tick_chain_state()
 
         for shard_id in self.shard_id_list:
-            self.tick_shard(shard_id)
-            if self.network.time > 1400:
+            if self.index is not None:
+                self.tick_shard(shard_id)
+            if self.network.time > 1300:
                 self.tick_tx(shard_id)
-
             if self.network.time % 100 == 0:
                 self.clear_txqueue(shard_id)
 
@@ -637,6 +643,7 @@ class Validator(object):
         if len(self.chain.state.log_listeners) == 0:
             self.chain.append_log_listener()
             self.chain.state.log_listeners.append(self.tx_to_shard_event_watcher)
+            self.chain.state.log_listeners.append(self.deposit_event_watcher)
 
         success, _ = self.chain.add_block(blk)
         if not p.MINIMIZE_CHECKING:
@@ -654,6 +661,7 @@ class Validator(object):
 
         # Check tx_to_shard log
         self.handle_tx_to_shard()
+        self.handle_deposit()
 
     def tick_shard(self, shard_id):
         if not self.is_SERENITY(about_to=True):
@@ -812,14 +820,46 @@ class Validator(object):
             self.print_info('[shard %d] Head collation changed: %s' % (shard_id, encode_hex(shard_head_hash)))
             return True
 
+    def deposit(self, gasprice=1):
+        """ Create and send withdrawal transaction
+        """
+        if self.index is not None:
+            self.print_info('has deposited')
+            return
+
+        tx = call_deposit(
+            self.chain.state,
+            self.key,
+            DEPOSIT_SIZE,
+            self.validation_code_addr,
+            self.address,
+            gasprice=gasprice,
+            nonce=self.head_nonce
+        )
+        self.txqueue.add_transaction(tx, force=True)
+        self.format_broadcast(1, tx, content=None)
+        self.head_nonce += 1
+        self.print_info('depositing!')
+
     def withdraw(self, gasprice=1):
         """ Create and send withdrawal transaction
         """
+        if self.index is None:
+            self.print_info('hasn\'t deposited')
+            return
         tx = call_withdraw(
-            self.chain.state, self.key, 0, self.index, sign(WITHDRAW_HASH, self.key), gasprice=gasprice)
+            self.chain.state,
+            self.key,
+            0,
+            self.index,
+            sign(WITHDRAW_HASH, self.key),
+            gasprice=gasprice,
+            nonce=self.head_nonce
+        )
         self.txqueue.add_transaction(tx, force=True)
         self.format_broadcast(1, tx, content=None)
-
+        self.head_nonce += 1
+        self.index = None
         self.print_info('withdrawing!')
 
     def add_header(self, collation, gasprice=1):
@@ -1087,19 +1127,37 @@ class Validator(object):
 
     def tx_to_shard_event_watcher(self, log):
         global tx_to_shard_topic
-        if log.topics[0] == tx_to_shard_topic:
+        if log.topics[0] == tx_to_shard_topic and self.is_watching(log.topics[2]):
             self.tx_to_shard_logs.append(log)
 
     def handle_tx_to_shard(self):
         for log in self.tx_to_shard_logs:
             shard_id = log.topics[2]
             for index, byte32_addr in enumerate(self.bytes32_wallet_addr_list):
-                if byte32_addr == log.topics[1] and self.is_watching(shard_id):
+                if byte32_addr == log.topics[1]:
                     user_index = (p.VALIDATOR_COUNT - 1) + self.id * p.NUM_WALLET + index
                     acct = accounts[user_index]
                     self.shard_data[shard_id].receipt_id[acct] = big_endian_to_int(log.data)
                     self.print_info('handle_tx_to_shard, receipt_id: {}'.format(self.shard_data[shard_id].receipt_id[acct]))
         self.tx_to_shard_logs = []
+
+    def deposit_event_watcher(self, log):
+        global deposit_topic
+        if log.topics[0] == deposit_topic and \
+                log.topics[1] == as_bytes32_addr(self.validation_code_addr):
+            self.deposit_logs.append(log)
+
+    def handle_deposit(self):
+        if len(self.deposit_logs) == 0:
+            return
+
+        if self.index is not None:
+            self.print_info('hasn\'t withdrawn?')
+            return
+
+        self.index = self.deposit_logs[-1].data
+        self.print_info('handle_deposit, index: {}'.format(self.deposit_logs[-1].data))
+        self.deposit_logs = []
 
 
 def generate_testing_shard(chain, shard_id, sender_privkey):

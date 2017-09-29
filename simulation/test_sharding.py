@@ -147,6 +147,7 @@ def test_simulation():
             progress(i, p.TOTAL_TICKS, status='Simulating.....')
 
             n.tick()
+
             if i % 100 == 0:
                 print('%d ticks passed' % i)
                 print_status()
@@ -155,10 +156,16 @@ def test_simulation():
                 for v in validators:
                     for shard_id in range(p.SHARD_COUNT):
                         v.tx_to_shard(shard_id)
-            # if i == 1000:
-            #     print('Withdrawing a few validators')
-            #     for v in validators[:5]:
-            #         v.withdraw()
+
+            if i == 2000:
+                print('A few validators withdraw')
+                for v in validators[:3]:
+                    v.withdraw()
+
+            if i == 2500:
+                print('A few validators deposit')
+                for v in validators[:3]:
+                    v.deposit()
     except:
         raise
     finally:
