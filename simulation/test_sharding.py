@@ -23,6 +23,7 @@ configure_logging(config_string=config_string)
 
 TIME_TX_TO_SHARD = 1000
 
+
 # if __name__ == "__main__":
 def test_simulation():
     # Initialize NetworkSimulator

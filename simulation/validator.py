@@ -17,7 +17,6 @@ from ethereum.transaction_queue import TransactionQueue
 from ethereum.meta import make_head_candidate
 from ethereum.block import Block
 from ethereum.transactions import Transaction
-from ethereum.pow.ethpow import Miner
 from ethereum.common import mk_block_from_prevstate
 from ethereum.consensus_strategy import get_consensus_strategy
 from ethereum.genesis_helpers import mk_basic_state
@@ -191,6 +190,8 @@ class Validator(object):
         # Sharding
         # Current shuffling cycle number
         self.shuffling_cycle = -1
+        # Cycle number of last disconnection
+        self.last_disconnect_cycle = -1
         # ShardData
         self.shard_data = {}
         # The shard_ids that the validator is watching
@@ -284,8 +285,8 @@ class Validator(object):
         # Set filter add_header logs
         if len(self.chain.state.log_listeners) == 0:
             self.chain.append_log_listener()
-            self.chain.state.log_listeners.append(self.tx_to_shard_event_watcher)
-            self.chain.state.log_listeners.append(self.deposit_event_watcher)
+            self.chain.state.log_listeners.append(self.tx_to_shard_log_listener)
+            self.chain.state.log_listeners.append(self.deposit_log_listener)
 
         block_success, missing_collations = self.chain.add_block(obj)
         self.print_info('block_success: {}'.format(block_success))
@@ -555,6 +556,8 @@ class Validator(object):
         self.tick_main()
         self.set_tick_chain_state()
 
+        self.tick_disconnect()
+
         for shard_id in self.shard_id_list:
             if self.index is not None:
                 self.tick_shard(shard_id)
@@ -642,8 +645,8 @@ class Validator(object):
         # Set filter add_header logs
         if len(self.chain.state.log_listeners) == 0:
             self.chain.append_log_listener()
-            self.chain.state.log_listeners.append(self.tx_to_shard_event_watcher)
-            self.chain.state.log_listeners.append(self.deposit_event_watcher)
+            self.chain.state.log_listeners.append(self.tx_to_shard_log_listener)
+            self.chain.state.log_listeners.append(self.deposit_log_listener)
 
         success, _ = self.chain.add_block(blk)
         if not p.MINIMIZE_CHECKING:
@@ -740,6 +743,14 @@ class Validator(object):
             # if current_nonce > self.shard_data[shard_id].head_nonce - TXQUEUE_DEPTH:
             self.generate_shard_tx(shard_id)
 
+    def tick_disconnect(self):
+        """ Disconnect from the old shard peers
+        """
+        if self.shuffling_cycle - 1 > self.last_disconnect_cycle and \
+                self.shuffling_cycle > 0 and \
+                self.chain.head.number % p.SHUFFLING_CYCLE_LENGTH == p.DISCONNECT_THRESHOLD:
+            self.disconnect(self.shuffling_cycle - 1)
+
     def connect(self, shard_id):
         """ Connect to new shard peers
         """
@@ -761,15 +772,24 @@ class Validator(object):
                 shard_id, network_id,
                 self.network.peers[network_id][self.id]))
 
-    def disconnect(self, shard_id):
+    def disconnect(self, last_cycle):
         global global_peer_list
-        global_peer_list
-        network_id = to_network_id(shard_id)
+        disconnect_shard_list = []
+        last_cycle = self.shuffling_cycle - 1
 
-        if self.shuffling_cycle - 1 in global_peer_list[shard_id]:
-            for peer in global_peer_list[shard_id][self.shuffling_cycle - 1]:
-                if peer not in global_peer_list[shard_id][self.shuffling_cycle]:
-                    self.network.remove_peer(self, peer, network_id=network_id)
+        for shard_id in range(p.SHARD_COUNT):
+            if self.need_disconnect(shard_id, last_cycle):
+                # Disconnect from each peer of old shard
+                for peer in global_peer_list[shard_id][last_cycle]:
+                    self.network.remove_peer(self, peer, network_id=to_network_id(shard_id))
+                disconnect_shard_list.append(shard_id)
+
+        if disconnect_shard_list:
+            self.print_info('Disconnected from shard {} after cycle {}'.format(
+                disconnect_shard_list,
+                last_cycle
+            ))
+        self.last_disconnect_cycle = last_cycle
 
     def need_sync(self, shard_id):
         """ Check if the validator needs to sync the shard data
@@ -797,6 +817,19 @@ class Validator(object):
                     asked_peer[peer.id] = True
         else:
             self.chain.shards[shard_id].is_syncing = False
+
+    def need_disconnect(self, shard_id, last_cycle):
+        """ Check if the validator needs to disconnect old shard connections
+        """
+        global global_peer_list
+        return (
+            # The validator is not watching this shard
+            shard_id not in self.shard_id_list and
+            # The peer list of last cycle exsits
+            last_cycle in global_peer_list[shard_id] and
+            # The validator was watching this shard
+            self in global_peer_list[shard_id][last_cycle]
+        )
 
     def update_main_head(self):
         """ Update main chain cached_head
@@ -886,6 +919,8 @@ class Validator(object):
         global_tx_to_collation[tx.hash] = str(self.chain.head.header.number) + '_' + encode_hex(collation.header.hash)
 
     def tx_to_shard(self, shard_id):
+        """ Call tx_to_shard function and send a tx_to_shard tx
+        """
         self.set_tick_chain_state()
         temp_state = self.tick_chain_state
         start = (p.VALIDATOR_COUNT - 1) + self.id * p.NUM_WALLET
@@ -919,7 +954,7 @@ class Validator(object):
         return shard_id_list
 
     def new_shard(self, shard_id):
-        """Add new shard and allocate ShardData
+        """ Add new shard and allocate ShardData
         """
         # Use fake state with initial balances
         initial_shard_state = generate_testing_shard(self.chain, shard_id, keys[0])
@@ -1016,6 +1051,8 @@ class Validator(object):
         cs.initialize(self.tick_chain_state, temp_block)
 
     def generate_shard_tx(self, shard_id, gasprice=GASPRICE):
+        """ Generate shard tx
+        """
         # v0 owns v10 to v19, v1 owns v20 to v29...
         index = (p.VALIDATOR_COUNT - 1) + self.id * p.NUM_WALLET + random.randint(0, p.NUM_WALLET - 1)
         key = keys[index]
@@ -1070,6 +1107,8 @@ class Validator(object):
         self.format_direct_send(to_network_id(shard_id), peer_id, req)
 
     def get_block_headers(self, block, amount):
+        """ Get BlockHeaders around `block`
+        """
         counter = self.chain.head.number
         limit = (block.number - amount + 1) if (block.number - amount + 1) > 0 else 0
         headers = []
@@ -1083,6 +1122,8 @@ class Validator(object):
         return headers[::-1]
 
     def get_blocks(self, block_hashes):
+        """ Get Blocks by their hash
+        """
         blocks = []
         for block_hash in block_hashes:
             b = self.chain.get_block(block_hash)
@@ -1091,6 +1132,8 @@ class Validator(object):
         return blocks
 
     def get_collation_headers(self, shard_id, collation, amount):
+        """ Get CollationHeaders  around `collation`
+        """
         counter = self.chain.shards[shard_id].head.number
         limit = (collation.number - amount + 1) if (collation.number - amount + 1) > 0 else 0
         headers = []
@@ -1104,6 +1147,8 @@ class Validator(object):
         return headers[::-1]
 
     def get_collations(self, shard_id, collation_hashes):
+        """ Get Collations by their hash
+        """
         collations = []
         for collation_hash in collation_hashes:
             collation = self.chain.shards[shard_id].get_collation(collation_hash)
@@ -1125,12 +1170,16 @@ class Validator(object):
                 self.address
             )
 
-    def tx_to_shard_event_watcher(self, log):
+    def tx_to_shard_log_listener(self, log):
+        """ The log listener of tx_to_shard topic
+        """
         global tx_to_shard_topic
         if log.topics[0] == tx_to_shard_topic and self.is_watching(log.topics[2]):
             self.tx_to_shard_logs.append(log)
 
     def handle_tx_to_shard(self):
+        """ tx_to_shard logs handler
+        """
         for log in self.tx_to_shard_logs:
             shard_id = log.topics[2]
             for index, byte32_addr in enumerate(self.bytes32_wallet_addr_list):
@@ -1141,13 +1190,17 @@ class Validator(object):
                     self.print_info('handle_tx_to_shard, receipt_id: {}'.format(self.shard_data[shard_id].receipt_id[acct]))
         self.tx_to_shard_logs = []
 
-    def deposit_event_watcher(self, log):
+    def deposit_log_listener(self, log):
+        """ The log listener of deposit topic
+        """
         global deposit_topic
         if log.topics[0] == deposit_topic and \
                 log.topics[1] == as_bytes32_addr(self.validation_code_addr):
             self.deposit_logs.append(log)
 
     def handle_deposit(self):
+        """ deposit logs handler
+        """
         if len(self.deposit_logs) == 0:
             return
 
@@ -1161,6 +1214,8 @@ class Validator(object):
 
 
 def generate_testing_shard(chain, shard_id, sender_privkey):
+    """ Generate initial state of shards
+    """
     shard_state = mk_basic_state(base_alloc, None, chain.env)
     shard_state.gas_limit = 4712388  # 10**8 * (p.VALIDATOR_COUNT + 1)
     txs = mk_initiating_txs_for_urs(
@@ -1176,6 +1231,8 @@ def generate_testing_shard(chain, shard_id, sender_privkey):
 
 
 def diff_transactions(state, txqueue, address):
+    """ Clear old tx of txqueue
+    """
     state_nonce = state.get_nonce(address)
     threshold = state_nonce - TXQUEUE_DEPTH
     outdated_txs = []
@@ -1187,10 +1244,14 @@ def diff_transactions(state, txqueue, address):
 
 
 def as_bytes32_addr(addr):
+    """ Make address from 20 bytes to 32 bytes
+    """
     return utils.big_endian_to_int(b'\x00' * 12 + addr)
 
 
 def get_bytes32_wallet_addr_list(id):
+    """ Get a list of the client addresses in bytes32 format
+    """
     start = (p.VALIDATOR_COUNT - 1) + id * p.NUM_WALLET
     end = start + p.NUM_WALLET
     return [as_bytes32_addr(accounts[i]) for i in range(start, end)]
