@@ -196,37 +196,27 @@ class ShardSyncResponse(rlp.Serializable):
 
 class FastSyncRequest(rlp.Serializable):
     fields = [
-        ('timestamp', int256),
-        ('peer_id', int256)
+        ('collation_hash', hash32),
     ]
 
-    def __init__(self, timestamp, peer_id):
-        self.timestamp = timestamp
-        self.peer_id = peer_id
+    def __init__(self, collation_hash):
+        self.collation_hash = collation_hash
 
     @property
     def hash(self):
-        return sha3(str(self.timestamp) + str(self.peer_id) + '::salt:jhfqou213nry138o2r124124')
+        return sha3(encode_hex(self.collation_hash) + '::salt:jhfqou213nry138o2r124124')
 
 
 class FastSyncResponse(rlp.Serializable):
     fields = [
         ('state_data', binary),
-        ('head', Collation),
-        ('score', int256),
-        ('collation_blockhash_lists', binary),
-        ('head_collation_of_block', binary)
-        # self.collation_blockhash_lists = defaultdict(list)    # M1: collation_header_hash -> list[blockhash]
-        # self.head_collation_of_block = {}   # M2: blockhash -> head_collation
+        ('collation', Collation)
     ]
 
-    def __init__(self, state_data, collation, score, collation_blockhash_lists, head_collation_of_block):
+    def __init__(self, state_data, collation):
         self.state_data = state_data
         self.collation = collation
-        self.score = score
-        self.collation_blockhash_lists = collation_blockhash_lists
-        self.head_collation_of_block = head_collation_of_block
 
     @property
     def hash(self):
-        return sha3(str(self.state_data) + '::salt:jhfqou213nry138o2r124124')
+        return sha3(str(self.state_data) + encode_hex(self.collation.hash) + '::salt:jhfqou213nry138o2r124124')

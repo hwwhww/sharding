@@ -153,20 +153,20 @@ def test_simulation():
                 print('%d ticks passed' % i)
                 print_status()
 
-            if i == TIME_TX_TO_SHARD:
-                for v in validators:
-                    for shard_id in range(p.SHARD_COUNT):
-                        v.tx_to_shard(shard_id)
+            # if i == TIME_TX_TO_SHARD:
+            #     for v in validators:
+            #         for shard_id in range(p.SHARD_COUNT):
+            #             v.tx_to_shard(shard_id)
 
-            if i == 2000:
-                print('A few validators withdraw')
-                for v in validators[:3]:
-                    v.withdraw()
+            # if i == 2000:
+            #     print('A few validators withdraw')
+            #     for v in validators[:3]:
+            #         v.withdraw()
 
-            if i == 2500:
-                print('A few validators deposit')
-                for v in validators[:3]:
-                    v.deposit()
+            # if i == 2500:
+            #     print('A few validators deposit')
+            #     for v in validators[:3]:
+            #         v.deposit()
     except:
         raise
     finally:

@@ -21,6 +21,8 @@ from ethereum.common import mk_block_from_prevstate
 from ethereum.consensus_strategy import get_consensus_strategy
 from ethereum.genesis_helpers import mk_basic_state
 from ethereum.config import Env
+from ethereum.exceptions import VerificationFailed
+from ethereum.state import State
 
 from sharding.collation import Collation
 from sharding.contract_utils import (
@@ -42,6 +44,9 @@ from sharding.main_chain import MainChain as Chain
 from sharding.collator import (
     create_collation,
     verify_collation_header,
+    mk_fast_sync_state,
+    verify_fast_sync_data,
+    get_deep_collation_hash,
 )
 from sharding.collation import CollationHeader
 from sharding.shard_chain import ShardChain
@@ -72,8 +77,9 @@ from message import (
 BLOCK_BEHIND_THRESHOLD = 3
 COLLATION_BEHIND_THRESHOLD = 2
 GET_BLOCKS_AMOUNT = 20
-GET_COLLATIONS_AMOUNT = 20
+GET_COLLATIONS_AMOUNT = 1
 TXQUEUE_DEPTH = 20
+PIVOT_DEPTH = 3
 
 # Gas setting
 STARTGAS = 21000
@@ -205,6 +211,8 @@ class Validator(object):
         # deposit logs
         self.deposit_logs = []
 
+        self.output_buf = ''
+
     @property
     def local_timestamp(self):
         return int(self.network.time * p.PRECISION) + self.time_offset
@@ -216,12 +224,22 @@ class Validator(object):
     def is_watching(self, shard_id):
         return shard_id in self.shard_id_list
 
-    def print_info(self, *args):
+    def print_info(self, msg):
         """ Print timestamp and validator_id as prefix
         """
         info = '[{}] [{}] [V {}] [B {}] '.format(self.network.time, self.local_timestamp, self.id, self.chain.head.number)
+
+        # Reduce file I/O
+        # self.output_buf += info
+        # self.output_buf += msg
+
+        # Print out immediately
         print(info, end='')
-        print(*args)
+        print(msg)
+
+    def buffer_to_output(self):
+        print(self.output_buf)
+        self.output_buf = ''
 
     def format_direct_send(self, network_id, peer_id, obj, content=None):
         self.network.direct_send(self, peer_id, obj, network_id=network_id)
@@ -433,10 +451,20 @@ class Validator(object):
     @format_receiving
     def on_receive_get_collation_headers_response(self, obj, network_id, sender_id):
         if len(obj.collation_headers) > 0:
-            req = GetCollationsRequest(self.local_timestamp, [header.hash for header in obj.collation_headers])
-            self.format_direct_send(
-                network_id, sender_id, req,
-                content=([encode_hex(header.hash) for header in obj.collation_headers]))
+            req_headers = []
+            for header in obj.collation_headers:
+                try:
+                    verify_collation_header(self.chain, header)
+                    req_headers.append(header)
+                except ValueError as e:
+                    self.print_info(str(e))
+                    break
+
+            if len(req_headers) > 0:
+                req = GetCollationsRequest(self.local_timestamp, [header.hash for header in req_headers])
+                self.format_direct_send(
+                    network_id, sender_id, req,
+                    content=([encode_hex(header.hash) for header in req_headers]))
 
     @format_receiving
     def on_receive_get_collations_request(self, obj, network_id, sender_id):
@@ -487,10 +515,10 @@ class Validator(object):
             return
 
         if self.chain.has_shard(shard_id) and \
-                len(obj.collations) <= self.chain.shards[shard_id].get_score(self.chain.shards[shard_id].head):
+                len(obj.collations) <= self.chain.shards[shard_id].head.number:
             self.print_info("I have latest collations, len(obj.collations): {}, head_collation_score: {}".format(
                 len(obj.collations),
-                self.chain.shards[shard_id].get_score(self.chain.shards[shard_id].head)
+                self.chain.shards[shard_id].head.number
             ))
             self.chain.shards[shard_id].is_syncing = False
             return
@@ -508,18 +536,36 @@ class Validator(object):
     @format_receiving
     def on_receive_fast_sync_request(self, obj, network_id, sender_id):
         shard_id = to_shard_id(network_id)
-        shard = self.chain.shards[shard_id]  # alias
         if not self.chain.has_shard(shard_id):
             return
 
-        state_data = json.dumps(shard.state.to_snapshot())
-        res = FastSyncResponse(
-            state_data=rlp.encode(state_data),
-            collation=shard.head,
-            score=shard.get_score(shard.head),
-            collation_blockhash_lists=rlp.encode(json.dumps(shard.collation_blockhash_lists_to_dict())),
-            head_collation_of_block=rlp.encode(json.dumps(shard.head_collation_of_block_to_dict()))
+        # Check if the collation_hash exsits
+        # 1. collation_hash is in DB
+        collation = self.chain.shards[shard_id].get_collation(obj.collation_hash)
+        if collation is None:
+            self.print_info('Incorrect collation_hash({})'.format(encode_hex(obj.collation_hash)))
+            return
+        # 2. collation_hash is on main chain
+        score = call_valmgr(
+            self.chain.state,
+            'get_collation_headers__score',
+            [shard_id, obj.collation_hash]
         )
+        if score <= 0:
+            self.print_info('Incorrect collation_hash({})'.format(encode_hex(obj.collation_hash)))
+            return
+
+        # Get state
+        state = mk_fast_sync_state(self.chain, shard_id, obj.collation_hash)
+        if state is None:
+            self.print_info('Can\'t get state from collation_hash({})'.format(encode_hex(obj.collation_hash)))
+            return
+        state_data = json.dumps(state.to_snapshot())
+        res = FastSyncResponse(
+            rlp.encode(state_data),
+            collation
+        )
+
         self.format_direct_send(network_id, sender_id, res, content=None)
 
     @format_receiving
@@ -529,25 +575,40 @@ class Validator(object):
             return
 
         state_data = json.loads(rlp.decode(obj.state_data))
-        collation_blockhash_lists = json.loads(rlp.decode(obj.collation_blockhash_lists))
-        head_collation_of_block = json.loads(rlp.decode(obj.head_collation_of_block))
+        # NOTE: In reality, the self.chain.env could be replaced by new env with new db
+        state = State.from_snapshot(state_data, self.chain.env, executing_on_head=True)
 
         if not self.chain.has_shard(shard_id):
             self.new_shard(shard_id)
 
-        if self.chain.shards[shard_id].get_score(self.chain.shards[shard_id].head) < obj.score:
-            self.chain.shards[shard_id].sync(
-                state_data=state_data,
-                collation=obj.collation,
-                score=obj.score,
-                collation_blockhash_lists=collation_blockhash_lists,
-                head_collation_of_block=head_collation_of_block
+        if self.chain.shards[shard_id].head.number < obj.collation.number:
+            try:
+                success = verify_fast_sync_data(
+                    self.chain,
+                    shard_id,
+                    state,
+                    obj.collation,
+                    depth=PIVOT_DEPTH,
+                )
+            except VerificationFailed as e:
+                self.print_info('verify_fast_sync_data failed: {}'.format(str(e)))
+                return False
+
+            if not success:
+                return
+
+            success = self.chain.shards[shard_id].set_head(
+                state,
+                obj.collation
             )
-            self.print_info('Updated shard {} from peer'.format(shard_id))
+            if success:
+                self.print_info('Updated shard {} from peer'.format(shard_id))
+                req = GetCollationHeadersRequest(self.local_timestamp, obj.collation.hash, 1)
+                self.format_direct_send(network_id, sender_id, req)
         else:
             self.print_info("I already have latest collations, score: {}, head_collation_score: {}".format(
-                obj.score,
-                self.chain.shards[shard_id].get_score(self.chain.shards[shard_id].head)
+                obj.collation.number,
+                self.chain.shards[shard_id].head.number
             ))
         self.chain.shards[shard_id].is_syncing = False
 
@@ -561,8 +622,8 @@ class Validator(object):
         for shard_id in self.shard_id_list:
             if self.index is not None:
                 self.tick_shard(shard_id)
-            if self.network.time > 1300:
-                self.tick_tx(shard_id)
+            # if self.network.time > 1300:
+            #     self.tick_tx(shard_id)
             if self.network.time % 100 == 0:
                 self.clear_txqueue(shard_id)
 
@@ -685,13 +746,13 @@ class Validator(object):
 
         self.shard_data[shard_id].period_head = expected_period_number
         self.shard_data[shard_id].used_parents[shard.head_hash] = True
-        self.print_info('is the current collator of shard {}'.format(
-            shard_id, self.chain.head.number))
+        self.print_info('is the current collator of shard {}, head collation number: {} '.format(
+            shard_id, shard.head.number))
 
         if random.random() > p.PROB_CREATE_BLOCK_SUCCESS:
             self.print_info(
                 'Simulating collator failure, collation %d not created' %
-                (shard.get_score(shard.head) + 1 if shard.head else 0))
+                (shard.head.number + 1 if shard.head else 0))
             return
 
         parent_collation_hash = self.chain.shards[shard_id].head_hash
@@ -1103,7 +1164,8 @@ class Validator(object):
     def request_fast_sync(self, shard_id, peer_id):
         """ Directly send FastSyncRequest
         """
-        req = FastSyncRequest(self.local_timestamp, self.id)
+        collation_hash = get_deep_collation_hash(self.chain, shard_id, PIVOT_DEPTH)
+        req = FastSyncRequest(collation_hash)
         self.format_direct_send(to_network_id(shard_id), peer_id, req)
 
     def get_block_headers(self, block, amount):

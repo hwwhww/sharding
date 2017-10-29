@@ -3,6 +3,36 @@ from distributions import (
     normal_distribution,
 )
 import random
+import threading
+
+
+class TickThread(threading.Thread):
+    def __init__(self, validator):
+        self.validator = validator
+        threading.Thread.__init__(self)
+
+    def run(self):
+        self.validator.tick()
+
+    def terminate(self):
+        if self.validator.output_buf:
+            self.validator.buffer_to_output()
+
+
+class ReceivingThread(threading.Thread):
+    def __init__(self, recipient, obj, network_id, sender):
+        self.recipient = recipient
+        threading.Thread.__init__(self)
+        self.obj = obj
+        self.network_id = network_id
+        self.sender = sender
+
+    def run(self):
+        self.recipient.on_receive(self.obj, self.network_id, self.sender)
+
+    def terminate(self):
+        if self.recipient.output_buf:
+            self.recipient.buffer_to_output()
 
 
 class NetworkSimulator():
@@ -59,10 +89,18 @@ class NetworkSimulator():
         if self.time in self.objqueue:
             for recipient, obj, network_id, sender in self.objqueue[self.time]:
                 if random.random() < self.reliability:
-                    recipient.on_receive(obj, network_id, sender)
+                    t = ReceivingThread(recipient, obj, network_id, sender)
+                    t.start()
+                    t.terminate()
+                    t.join()
+
             del self.objqueue[self.time]
         for a in self.agents:
-            a.tick()
+            t = TickThread(a)
+            t.start()
+            t.terminate()
+            t.join()
+
         self.time += 1
 
     def run(self, steps):
